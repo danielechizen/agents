@@ -5,6 +5,7 @@ import "./asaas";
 import "./google-calendar";
 import "./google-drive";
 import "./google-sheets";
+import "./leaf-admin";
 import "./resend";
 
 export {

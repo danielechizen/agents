@@ -67,6 +67,18 @@ export const CATALOG: ReadonlyArray<CatalogEntry> = [
     supportsInbound: false,
     defaultInboundAuth: "NONE",
   },
+  {
+    catalogType: "LEAF_ADMIN",
+    label: "Leaf Admin",
+    kind: "TOOLPACK",
+    description:
+      "ISP operations on a Leaf Admin system. Outbound toolpack (contracts, connection status, delayed invoices, second copy, and connection changes the customer confirmed) plus the INVOICE_PAID webhook, which wakes the agent on the conversation that fetched the invoice. system_url is instance config; the API key is the vault credential. The model never chooses the URL, the key, or the customer's phone.",
+    supportsInbound: true,
+    defaultInboundAuth: "STATIC_HEADER",
+    // The provider does not document a signature header. NONE is refused: an open route would
+    // let an unauthenticated POST wake the agent on a customer conversation.
+    requiresInboundAuth: true,
+  },
 ];
 
 const BY_TYPE = new Map(CATALOG.map((e) => [e.catalogType, e]));
