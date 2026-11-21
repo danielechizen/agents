@@ -1,0 +1,1048 @@
+import type { StructuredToolInterface } from "@langchain/core/tools";
+import { z } from "zod";
+import type { Prisma } from "@/../generated/prisma/client";
+import logger from "@/api/lib/logger";
+import {
+  failableTool,
+  type ToolFailure,
+  toolFailure,
+} from "@/graph/tools/failure";
+import { fetchBounded } from "@/lib/outbound";
+import { assertSafeOutboundUrl } from "@/lib/ssrf";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { clipText } from "@/lib/text";
+import { leafInvoiceExternalId } from "../leaf-admin-mapper";
+import {
+  type IntegrationSelection,
+  registerToolpack,
+  type Toolpack,
+  type ToolpackCtx,
+  type ToolSpec,
+} from "./types";
+
+// Leaf Admin outbound toolpack. system_url (https, then /api/v2) and the vault API key are
+// instance config; the contact phone is the Chatwoot mirror. TLS verification stays the
+// runtime default. A write runs only when confirmed is true.
+
+const TIMEOUT_MS = 15_000;
+const LIST_CAP = 64_000;
+const PAYMENT_CAP = 1_000_000;
+const PAGE_LIMIT = 50;
+const MAX_PAGES = 20;
+const DOCUMENT_ATTRIBUTE = "cpf_cnpj";
+const INVOICE_ID = /^[1-9]\d*$/;
+const QR_MAX = 4_000;
+const SECRET_MIN = 8;
+
+const PAYMENT_QUERY = {
+  pix: "pix",
+  boleto: "bankSlip",
+  card: "creditCard",
+} as const;
+type PaymentType = keyof typeof PAYMENT_QUERY;
+
+const CONFIRM_REFUSAL =
+  "Refused: set confirmed to true only after the customer agrees to this change.";
+
+function sysCtx(tenantId: bigint): TenantContext {
+  return { tenantId, userId: null, role: "TENANT_ADMIN" };
+}
+
+function scrub(text: string, secret: string): string {
+  if (secret.length < SECRET_MIN) return text;
+  return text.split(secret).join("[filtered]");
+}
+
+function fail(secret: string, message: string): ToolFailure {
+  return toolFailure(scrub(message, secret));
+}
+
+function say(secret: string, message: string): string {
+  return scrub(message, secret);
+}
+
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function text(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+function rawText(value: unknown): string | null {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  return value;
+}
+
+function digits(value: unknown): string | null {
+  const raw = text(value);
+  if (!raw) return null;
+  const only = raw.replace(/\D/g, "");
+  return only.length > 0 ? only : null;
+}
+
+function finiteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function successStatus(code: unknown): boolean {
+  if (code === 1) return true;
+  return (
+    typeof code === "string" && ["1", "ok"].includes(code.trim().toLowerCase())
+  );
+}
+
+function invalidDetail(detail: unknown): boolean {
+  if (detail === undefined || detail === null) return false;
+  return ["19", "43", "bad_token", "forbidden"].includes(
+    String(detail).trim().toLowerCase(),
+  );
+}
+
+function resolveBase(
+  config: Record<string, unknown>,
+): { base: string } | { refusal: string } {
+  const raw =
+    typeof config.system_url === "string" ? config.system_url.trim() : "";
+  if (!raw) {
+    return {
+      refusal: "Leaf Admin system_url is not configured on this integration.",
+    };
+  }
+  const stripped = raw.replace(/\/+$/, "");
+  let url: URL;
+  try {
+    url = new URL(stripped);
+  } catch {
+    return { refusal: "Leaf Admin system_url is not a valid URL." };
+  }
+  if (url.protocol !== "https:") {
+    return { refusal: "Leaf Admin system_url must use https." };
+  }
+  if (url.username || url.password) {
+    return {
+      refusal: "Leaf Admin system_url must not include a username or password.",
+    };
+  }
+  if (url.search || url.hash) {
+    return {
+      refusal: "Leaf Admin system_url must not include a query or fragment.",
+    };
+  }
+  return { base: `${stripped}/api/v2` };
+}
+
+type LeafNo = { ok: false; failure: ToolFailure };
+type Ready = { ok: true; token: string; base: string };
+
+async function prepare(
+  sel: IntegrationSelection,
+  ctx: ToolpackCtx,
+): Promise<Ready | LeafNo> {
+  const base = resolveBase(sel.config);
+  if ("refusal" in base)
+    return { ok: false, failure: toolFailure(base.refusal) };
+  let token: string | null = null;
+  try {
+    token = sel.credentialRef
+      ? await ctx.resolveCredential(sel.credentialRef)
+      : null;
+  } catch {
+    logger.warn({ phase: "credential" }, "leaf-admin: credential read failed");
+    return {
+      ok: false,
+      failure: toolFailure("Leaf Admin credential could not be read."),
+    };
+  }
+  if (!token) {
+    return {
+      ok: false,
+      failure: toolFailure(
+        "Leaf Admin credential is not configured for this integration.",
+      ),
+    };
+  }
+  return { ok: true, token, base: base.base };
+}
+
+function leafUrl(
+  base: string,
+  path: string,
+  query?: Record<string, string | number | boolean>,
+): string {
+  const params = new URLSearchParams();
+  if (query) {
+    for (const [key, value] of Object.entries(query)) {
+      params.set(key, String(value));
+    }
+  }
+  const qs = params.toString();
+  return qs ? `${base}${path}?${qs}` : `${base}${path}`;
+}
+
+// TLS stays the runtime default: the request sets no custom agent and does not disable verification.
+async function leafRequest(
+  ready: Ready,
+  ctx: ToolpackCtx,
+  path: string,
+  init: {
+    method: "GET" | "POST";
+    query?: Record<string, string | number | boolean>;
+    body?: unknown;
+    cap?: number;
+  },
+): Promise<{ ok: true; body: Record<string, unknown> } | LeafNo> {
+  const url = leafUrl(ready.base, path, init.query);
+  const cap = init.cap ?? LIST_CAP;
+  const assertSafe = ctx.assertSafe ?? assertSafeOutboundUrl;
+  try {
+    await assertSafe(url);
+  } catch (err) {
+    logger.warn(
+      { detail: scrub(errText(err), ready.token) },
+      "leaf-admin: url refused",
+    );
+    return {
+      ok: false,
+      failure: fail(
+        ready.token,
+        "The Leaf Admin URL was refused. It must be https on a public host.",
+      ),
+    };
+  }
+  const doFetch = ctx.fetchImpl ?? fetch;
+  let status = 0;
+  let json: unknown = null;
+  let truncated = false;
+  try {
+    const { res, body } = await fetchBounded(
+      url,
+      {
+        method: init.method,
+        headers: {
+          "x-auth-header": ready.token,
+          Accept: "application/json",
+          ...(init.body !== undefined
+            ? { "Content-Type": "application/json" }
+            : {}),
+          "User-Agent": "agents",
+        },
+        body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+        redirect: "error",
+      },
+      { timeoutMs: TIMEOUT_MS, cap, fetchImpl: doFetch },
+    );
+    status = res.status;
+    truncated = body.chars > cap;
+    try {
+      json = JSON.parse(body.text);
+    } catch {
+      json = null;
+    }
+  } catch (err) {
+    logger.warn(
+      { detail: scrub(errText(err), ready.token) },
+      "leaf-admin: request failed",
+    );
+    return {
+      ok: false,
+      failure: fail(
+        ready.token,
+        "Failed to reach Leaf Admin. Try again shortly.",
+      ),
+    };
+  }
+  if (truncated) {
+    return {
+      ok: false,
+      failure: fail(ready.token, "Leaf Admin response was too large to read."),
+    };
+  }
+  const record = asRecord(json);
+  if (
+    status >= 200 &&
+    status < 300 &&
+    record &&
+    successStatus(record.statusCode)
+  ) {
+    return { ok: true, body: record };
+  }
+  const detailCode = record?.detailCode;
+  logger.warn(
+    {
+      status,
+      detailCode:
+        detailCode === undefined ? undefined : clipText(String(detailCode), 64),
+    },
+    "leaf-admin: request rejected",
+  );
+  if (status === 401 || status === 403 || invalidDetail(detailCode)) {
+    return {
+      ok: false,
+      failure: fail(
+        ready.token,
+        "Leaf Admin rejected the credential. Check the vault API key.",
+      ),
+    };
+  }
+  return {
+    ok: false,
+    failure: fail(
+      ready.token,
+      `Leaf Admin rejected the request (HTTP ${status}).`,
+    ),
+  };
+}
+
+function documentOf(attrs: unknown): string | null {
+  const bag = asRecord(attrs);
+  if (!bag) return null;
+  return digits(bag[DOCUMENT_ATTRIBUTE]);
+}
+
+async function loadIdentity(
+  ctx: ToolpackCtx,
+): Promise<
+  { ok: true; phone: string | null; document: string | null } | LeafNo
+> {
+  if (ctx.contactDbId == null) {
+    return {
+      ok: false,
+      failure: toolFailure(
+        "This conversation has no contact on file, so Leaf Admin cannot be queried.",
+      ),
+    };
+  }
+  const contactId = ctx.contactDbId;
+  try {
+    const row = await runScopedOn(ctx.base, sysCtx(ctx.tenantId), (db) =>
+      db.contact.findUnique({
+        where: { id: contactId },
+        select: { phone: true, customAttributes: true },
+      }),
+    );
+    return {
+      ok: true,
+      phone: digits(row?.phone),
+      document: documentOf(row?.customAttributes),
+    };
+  } catch (err) {
+    logger.warn(
+      { detail: clipText(errText(err), 200) },
+      "leaf-admin: contact read failed",
+    );
+    return {
+      ok: false,
+      failure: toolFailure(
+        "Could not read this contact, so Leaf Admin was not called.",
+      ),
+    };
+  }
+}
+
+type OwnedContract = {
+  id: string;
+  connectionId: string | null;
+  connectionValue: unknown;
+  name: string | null;
+  status: string | null;
+  customerId: string | null;
+  address: { street?: string; number?: string } | null;
+};
+
+function parseContract(row: Record<string, unknown>): OwnedContract | null {
+  const id = text(row.id);
+  if (!id) return null;
+  const connectionValue = row.connectionId;
+  const connectionId = text(connectionValue);
+  const customer = asRecord(row.customer);
+  const customerId =
+    text(row.customerId) ??
+    text(row.clientId) ??
+    (customer ? (text(customer.id) ?? text(customer.customerId)) : null);
+  const addressRaw = asRecord(row.address);
+  const street = addressRaw ? text(addressRaw.street) : null;
+  const number = addressRaw ? text(addressRaw.number) : null;
+  const address =
+    street || number
+      ? {
+          ...(street ? { street } : {}),
+          ...(number ? { number } : {}),
+        }
+      : null;
+  return {
+    id,
+    connectionId,
+    connectionValue: connectionId ? connectionValue : null,
+    name: text(row.name),
+    status: text(row.status),
+    customerId,
+    address,
+  };
+}
+
+function projectContract(contract: OwnedContract): Record<string, unknown> {
+  return {
+    id: contract.id,
+    ...(contract.name ? { name: contract.name } : {}),
+    ...(contract.status ? { status: contract.status } : {}),
+    ...(contract.connectionId ? { connectionId: contract.connectionId } : {}),
+    ...(contract.customerId ? { customerId: contract.customerId } : {}),
+    ...(contract.address ? { address: contract.address } : {}),
+  };
+}
+
+async function listContracts(
+  ready: Ready,
+  ctx: ToolpackCtx,
+  filter: { phone?: string; document?: string },
+): Promise<{ ok: true; rows: OwnedContract[] } | LeafNo> {
+  const rows: OwnedContract[] = [];
+  let seen = 0;
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const res = await leafRequest(ready, ctx, "/integrations/contracts", {
+      method: "GET",
+      query: { ...filter, page, limit: PAGE_LIMIT },
+    });
+    if (!res.ok) return res;
+    const raw = Array.isArray(res.body.results) ? res.body.results : [];
+    for (const item of raw) {
+      const record = asRecord(item);
+      const parsed = record ? parseContract(record) : null;
+      if (parsed) rows.push(parsed);
+    }
+    seen += raw.length;
+    const total = finiteNumber(res.body.total) ?? 0;
+    if (raw.length === 0 || seen >= total) break;
+  }
+  return { ok: true, rows };
+}
+
+async function findContracts(
+  ready: Ready,
+  ctx: ToolpackCtx,
+): Promise<
+  | { ok: true; matchedBy: "phone" | "document"; contracts: OwnedContract[] }
+  | LeafNo
+> {
+  const identity = await loadIdentity(ctx);
+  if (!identity.ok) return identity;
+  if (!identity.phone && !identity.document) {
+    return {
+      ok: false,
+      failure: fail(
+        ready.token,
+        "This contact has no phone and no stored CPF/CNPJ, so Leaf Admin cannot be queried.",
+      ),
+    };
+  }
+  if (identity.phone) {
+    const listed = await listContracts(ready, ctx, { phone: identity.phone });
+    if (!listed.ok) return listed;
+    if (listed.rows.length > 0) {
+      return { ok: true, matchedBy: "phone", contracts: listed.rows };
+    }
+  }
+  if (identity.document) {
+    const listed = await listContracts(ready, ctx, {
+      document: identity.document,
+    });
+    if (!listed.ok) return listed;
+    if (listed.rows.length > 0) {
+      return { ok: true, matchedBy: "document", contracts: listed.rows };
+    }
+  }
+  return {
+    ok: false,
+    failure: fail(ready.token, "No Leaf Admin contract matches this contact."),
+  };
+}
+
+function byContractId(rows: OwnedContract[], id: string): OwnedContract | null {
+  const wanted = id.trim();
+  return rows.find((row) => row.id === wanted) ?? null;
+}
+
+function byConnectionId(
+  rows: OwnedContract[],
+  id: string,
+): OwnedContract | null {
+  const wanted = id.trim();
+  return rows.find((row) => row.connectionId === wanted) ?? null;
+}
+
+function postConnectionId(contract: OwnedContract): string | number {
+  const value = contract.connectionValue;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) return value;
+  return contract.connectionId ?? "";
+}
+
+async function rememberInvoices(
+  ready: Ready,
+  ctx: ToolpackCtx,
+  sel: IntegrationSelection,
+  tool: string,
+  ids: string[],
+  metadata: Record<string, unknown>,
+): Promise<void> {
+  const unique = [
+    ...new Set(
+      ids
+        .map((id) => id.trim())
+        .filter((id) => id.length > 0 && id.length <= 200),
+    ),
+  ];
+  if (unique.length === 0) return;
+  try {
+    await runScopedOn(ctx.base, sysCtx(ctx.tenantId), async (db) => {
+      for (const id of unique) {
+        const externalId = leafInvoiceExternalId(id);
+        await db.integrationExternalRef.upsert({
+          where: {
+            tenantId_externalId: { tenantId: ctx.tenantId, externalId },
+          },
+          create: {
+            tenantId: ctx.tenantId,
+            integrationInstanceId: sel.instanceId,
+            externalId,
+            threadId: ctx.threadId,
+            kind: "leaf_invoice",
+            metadata: metadata as Prisma.InputJsonValue,
+          },
+          update: {
+            threadId: ctx.threadId,
+            integrationInstanceId: sel.instanceId,
+            kind: "leaf_invoice",
+            metadata: metadata as Prisma.InputJsonValue,
+          },
+        });
+      }
+    });
+  } catch (err) {
+    logger.warn(
+      { detail: clipText(scrub(errText(err), ready.token), 200) },
+      "leaf-admin: failed to persist invoice correlation",
+    );
+    ctx.onSideEffectError?.({ tool, phase: "persist_ref", err });
+  }
+}
+
+function invoiceIds(row: Record<string, unknown>): string[] {
+  const id = text(row.id);
+  const uid = text(row.uid);
+  const out: string[] = [];
+  if (id) out.push(id);
+  if (uid && uid !== id) out.push(uid);
+  return out;
+}
+
+function projectInvoice(
+  row: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const id = text(row.id);
+  if (!id) return null;
+  const description = text(row.description) ?? text(row.name);
+  const uid = text(row.uid);
+  const dueDate = text(row.dueDate);
+  const status = text(row.status);
+  return {
+    id,
+    ...(uid ? { uid } : {}),
+    ...(description ? { description } : {}),
+    ...(row.amount !== undefined ? { amount: row.amount } : {}),
+    ...(dueDate ? { dueDate } : {}),
+    ...(status ? { status } : {}),
+  };
+}
+
+function paymentMethods(
+  body: Record<string, unknown>,
+): { pix: boolean; bankSlip: boolean; creditCard: boolean } | null {
+  const flags = asRecord(body.paymentMethods);
+  if (!flags) return null;
+  return {
+    pix: flags.pix === true,
+    bankSlip: flags.bankSlip === true,
+    creditCard: flags.creditCard === true,
+  };
+}
+
+function projectGpon(value: unknown): Record<string, unknown> | null {
+  const gpon = asRecord(value);
+  if (!gpon) return null;
+  const out: Record<string, unknown> = {};
+  if (gpon.status !== undefined) out.status = gpon.status;
+  if (gpon.rxPower !== undefined) out.rxPower = gpon.rxPower;
+  if (gpon.alarm !== undefined) out.alarm = gpon.alarm;
+  return out;
+}
+
+function projectConnection(
+  body: Record<string, unknown>,
+  connectionId: string,
+): Record<string, unknown> {
+  const results = Array.isArray(body.results) ? body.results : [];
+  const records = results
+    .map((item) => asRecord(item))
+    .filter((item): item is Record<string, unknown> => item !== null);
+  const row =
+    records.find((item) => text(item.connectionId) === connectionId) ??
+    records[0] ??
+    null;
+  if (!row) return { connectionId };
+  const auth = asRecord(row.auth);
+  const gpon = projectGpon(row.gpon);
+  return {
+    connectionId: text(row.connectionId) ?? connectionId,
+    ...(text(row.status) ? { status: text(row.status) } : {}),
+    ...(text(row.pppoeLogin) ? { pppoeLogin: text(row.pppoeLogin) } : {}),
+    ...(gpon ? { gpon } : {}),
+    ...(text(auth?.message) ? { authMessage: text(auth?.message) } : {}),
+  };
+}
+
+function canSend(ctx: ToolpackCtx): ctx is ToolpackCtx & {
+  chatwoot: NonNullable<ToolpackCtx["chatwoot"]>;
+} {
+  if (!ctx.chatwoot) return false;
+  if (ctx.muted === true || ctx.chatwoot.client.muted === true) return false;
+  return true;
+}
+
+function decodePdf(b64: string): ArrayBuffer | null {
+  const cleaned = b64.replace(/\s/g, "");
+  if (!cleaned) return null;
+  const buf = Buffer.from(cleaned, "base64");
+  if (buf.length === 0) return null;
+  const out = new ArrayBuffer(buf.byteLength);
+  new Uint8Array(out).set(buf);
+  return out;
+}
+
+const LOOKUP_SCHEMA = z.object({});
+const CONNECTION_SCHEMA = z.object({
+  connectionId: z
+    .string()
+    .min(1)
+    .max(128)
+    .describe(
+      "connectionId of a contract leaf_lookup_customer returned for this contact. Any other id is refused.",
+    ),
+});
+const CONTRACT_SCHEMA = z.object({
+  contractId: z
+    .string()
+    .min(1)
+    .max(128)
+    .describe(
+      "Contract id leaf_lookup_customer returned for this contact. Any other id is refused.",
+    ),
+});
+const SECOND_COPY_SCHEMA = z.object({
+  contractId: z
+    .string()
+    .min(1)
+    .max(128)
+    .describe(
+      "Contract id leaf_lookup_customer returned for this contact. Any other id is refused.",
+    ),
+  invoiceId: z
+    .string()
+    .min(1)
+    .max(40)
+    .describe(
+      "Billet id from leaf_open_invoices, digits only, no leading zero.",
+    ),
+  type: z
+    .enum(["pix", "boleto", "card"])
+    .describe("How the customer asked to pay: pix, boleto, or card."),
+});
+const WRITE_SCHEMA = z.object({
+  connectionId: z
+    .string()
+    .min(1)
+    .max(128)
+    .describe(
+      "connectionId of a contract leaf_lookup_customer returned for this contact. Any other id is refused.",
+    ),
+  confirmed: z
+    .boolean()
+    .describe(
+      "True only after the customer explicitly agreed to this change in the conversation. false refuses the call and nothing is sent.",
+    ),
+});
+
+const LEAF_TOOL_SPECS: ToolSpec[] = [
+  { name: "leaf_lookup_customer", schema: LOOKUP_SCHEMA },
+  { name: "leaf_connection_status", schema: CONNECTION_SCHEMA },
+  { name: "leaf_open_invoices", schema: CONTRACT_SCHEMA },
+  { name: "leaf_second_copy", schema: SECOND_COPY_SCHEMA },
+  { name: "leaf_extend_connection", schema: WRITE_SCHEMA },
+  { name: "leaf_clear_mac", schema: WRITE_SCHEMA },
+  { name: "leaf_disconnect", schema: WRITE_SCHEMA },
+];
+
+function buildLookupTool(
+  sel: IntegrationSelection,
+  ctx: ToolpackCtx,
+): StructuredToolInterface {
+  return failableTool(
+    async () => {
+      const ready = await prepare(sel, ctx);
+      if (!ready.ok) return ready.failure;
+      const found = await findContracts(ready, ctx);
+      if (!found.ok) return found.failure;
+      return say(
+        ready.token,
+        JSON.stringify({
+          matchedBy: found.matchedBy,
+          contracts: found.contracts.map(projectContract),
+        }),
+      );
+    },
+    {
+      name: "leaf_lookup_customer",
+      description:
+        "Look up this contact's Leaf Admin contracts. The phone is the Chatwoot contact's phone; a stored CPF/CNPJ (contact attribute cpf_cnpj) is used only when the phone matches nothing. Returns contract ids and connection ids for the other Leaf tools. Do not pass a phone, document, URL, token, or an id you were not given.",
+      schema: LOOKUP_SCHEMA,
+    },
+  );
+}
+
+function buildConnectionTool(
+  sel: IntegrationSelection,
+  ctx: ToolpackCtx,
+): StructuredToolInterface {
+  return failableTool(
+    async (input: { connectionId: string }) => {
+      const ready = await prepare(sel, ctx);
+      if (!ready.ok) return ready.failure;
+      const found = await findContracts(ready, ctx);
+      if (!found.ok) return found.failure;
+      const contract = byConnectionId(found.contracts, input.connectionId);
+      if (!contract?.connectionId) {
+        return fail(
+          ready.token,
+          "That connection was not returned for this contact.",
+        );
+      }
+      const res = await leafRequest(ready, ctx, "/integrations/customers", {
+        method: "GET",
+        query: { connectionId: contract.connectionId, limit: 1 },
+      });
+      if (!res.ok) return res.failure;
+      return say(
+        ready.token,
+        JSON.stringify(projectConnection(res.body, contract.connectionId)),
+      );
+    },
+    {
+      name: "leaf_connection_status",
+      description:
+        "Read the connection status for a connectionId leaf_lookup_customer returned for this contact. The PPPoE password is never included.",
+      schema: CONNECTION_SCHEMA,
+    },
+  );
+}
+
+function buildInvoicesTool(
+  sel: IntegrationSelection,
+  ctx: ToolpackCtx,
+): StructuredToolInterface {
+  return failableTool(
+    async (input: { contractId: string }) => {
+      const ready = await prepare(sel, ctx);
+      if (!ready.ok) return ready.failure;
+      const found = await findContracts(ready, ctx);
+      if (!found.ok) return found.failure;
+      const contract = byContractId(found.contracts, input.contractId);
+      if (!contract) {
+        return fail(
+          ready.token,
+          "That contract was not returned for this contact.",
+        );
+      }
+      const res = await leafRequest(ready, ctx, "/integrations/billets", {
+        method: "GET",
+        query: { contractId: contract.id, status: "delayed", limit: 5 },
+      });
+      if (!res.ok) return res.failure;
+      const raw = Array.isArray(res.body.results) ? res.body.results : [];
+      const invoices: Record<string, unknown>[] = [];
+      const ids: string[] = [];
+      for (const item of raw) {
+        const record = asRecord(item);
+        if (!record) continue;
+        const projected = projectInvoice(record);
+        if (!projected) continue;
+        invoices.push(projected);
+        ids.push(...invoiceIds(record));
+      }
+      await rememberInvoices(ready, ctx, sel, "leaf_open_invoices", ids, {
+        contractId: contract.id,
+      });
+      const methods = paymentMethods(res.body);
+      return say(
+        ready.token,
+        JSON.stringify({
+          contractId: contract.id,
+          ...(methods ? { paymentMethods: methods } : {}),
+          invoices,
+        }),
+      );
+    },
+    {
+      name: "leaf_open_invoices",
+      description:
+        "List up to 5 delayed billets for a contract id leaf_lookup_customer returned for this contact. Use an invoice id from this list with leaf_second_copy.",
+      schema: CONTRACT_SCHEMA,
+    },
+  );
+}
+
+async function renderPayment(
+  ready: Ready,
+  ctx: ToolpackCtx,
+  type: PaymentType,
+  invoiceId: string,
+  body: Record<string, unknown>,
+): Promise<string | ToolFailure> {
+  if (type === "pix") {
+    const copyPaste = rawText(body.copyPaste);
+    const qr = rawText(body.qr) ?? rawText(body.qrCode);
+    if (!copyPaste) {
+      return fail(
+        ready.token,
+        "Leaf Admin did not return a PIX copy-paste code.",
+      );
+    }
+    const qrLine =
+      qr && qr.length <= QR_MAX
+        ? `\nQR: ${qr}`
+        : qr
+          ? "\nQR image omitted (too large). The copy-paste line is complete."
+          : "";
+    return say(ready.token, `PIX copy-paste: ${copyPaste}${qrLine}`);
+  }
+  if (type === "card") {
+    const params = asRecord(body.params);
+    const url = rawText(body.url) ?? (params ? rawText(params.url) : null);
+    if (!url) {
+      return fail(ready.token, "Leaf Admin did not return a card payment URL.");
+    }
+    return say(ready.token, `Card payment URL: ${url}`);
+  }
+  const url = rawText(body.url);
+  const pdf = rawText(body.pdf);
+  if (!url && !pdf) {
+    return fail(ready.token, "Leaf Admin did not return a boleto URL or PDF.");
+  }
+  let sent = false;
+  if (pdf && canSend(ctx)) {
+    const bytes = decodePdf(pdf);
+    if (bytes) {
+      try {
+        await ctx.chatwoot.client.sendFileAttachment(
+          ctx.chatwoot.conversationId,
+          bytes,
+          `boleto-${invoiceId}.pdf`,
+          "application/pdf",
+        );
+        ctx.chatwoot.onSent?.();
+        sent = true;
+      } catch (err) {
+        logger.warn(
+          { detail: clipText(scrub(errText(err), ready.token), 200) },
+          "leaf-admin: boleto pdf delivery failed",
+        );
+      }
+    }
+  }
+  const lines = [`Boleto ${invoiceId}.`];
+  if (url) lines.push(`Payment URL: ${url}`);
+  if (sent) lines.push("The PDF was sent in this conversation.");
+  else
+    lines.push("The PDF was not attached. Send the customer the payment URL.");
+  return say(ready.token, lines.join("\n"));
+}
+
+function buildSecondCopyTool(
+  sel: IntegrationSelection,
+  ctx: ToolpackCtx,
+): StructuredToolInterface {
+  return failableTool(
+    async (input: {
+      contractId: string;
+      invoiceId: string;
+      type: PaymentType;
+    }) => {
+      if (!INVOICE_ID.test(input.invoiceId)) {
+        return toolFailure(
+          "The invoice id must be digits only, without a leading zero.",
+        );
+      }
+      const ready = await prepare(sel, ctx);
+      if (!ready.ok) return ready.failure;
+      const found = await findContracts(ready, ctx);
+      if (!found.ok) return found.failure;
+      const contract = byContractId(found.contracts, input.contractId);
+      if (!contract) {
+        return fail(
+          ready.token,
+          "That contract was not returned for this contact.",
+        );
+      }
+      const listed = await leafRequest(ready, ctx, "/integrations/billets", {
+        method: "GET",
+        query: { contractId: contract.id, status: "delayed", limit: 5 },
+      });
+      if (!listed.ok) return listed.failure;
+      const raw = Array.isArray(listed.body.results) ? listed.body.results : [];
+      const records = raw
+        .map((item) => asRecord(item))
+        .filter((item): item is Record<string, unknown> => item !== null);
+      const invoice = records.find((row) => text(row.id) === input.invoiceId);
+      if (!invoice) {
+        return fail(
+          ready.token,
+          "That invoice was not returned for this contact.",
+        );
+      }
+      const methods = paymentMethods(listed.body);
+      if (methods && methods[PAYMENT_QUERY[input.type]] !== true) {
+        return fail(
+          ready.token,
+          "That payment method is not available for this invoice.",
+        );
+      }
+      const paid = await leafRequest(
+        ready,
+        ctx,
+        `/integrations/billets/${input.invoiceId}/payment`,
+        {
+          method: "GET",
+          query: { type: PAYMENT_QUERY[input.type] },
+          cap: PAYMENT_CAP,
+        },
+      );
+      if (!paid.ok) return paid.failure;
+      await rememberInvoices(
+        ready,
+        ctx,
+        sel,
+        "leaf_second_copy",
+        [...invoiceIds(invoice), input.invoiceId],
+        { contractId: contract.id },
+      );
+      return renderPayment(ready, ctx, input.type, input.invoiceId, paid.body);
+    },
+    {
+      name: "leaf_second_copy",
+      description:
+        "Second copy of a delayed billet that belongs to this contact (pix, boleto, or card). The invoice id must be one leaf_open_invoices returned, digits only. PIX returns the copy-paste line and the QR. Boleto sends the PDF into this conversation when one is open and returns the payment URL. Card returns the payment URL.",
+      schema: SECOND_COPY_SCHEMA,
+    },
+  );
+}
+
+function buildWriteTool(
+  sel: IntegrationSelection,
+  ctx: ToolpackCtx,
+  spec: {
+    name: string;
+    path: string;
+    description: string;
+    done: string;
+    forceFalse?: boolean;
+  },
+): StructuredToolInterface {
+  return failableTool(
+    async (input: { connectionId: string; confirmed: boolean }) => {
+      if (input.confirmed !== true) return toolFailure(CONFIRM_REFUSAL);
+      const ready = await prepare(sel, ctx);
+      if (!ready.ok) return ready.failure;
+      const found = await findContracts(ready, ctx);
+      if (!found.ok) return found.failure;
+      const contract = byConnectionId(found.contracts, input.connectionId);
+      if (!contract?.connectionId) {
+        return fail(
+          ready.token,
+          "That connection was not returned for this contact.",
+        );
+      }
+      const connectionId = postConnectionId(contract);
+      const res = await leafRequest(ready, ctx, spec.path, {
+        method: "POST",
+        body: spec.forceFalse
+          ? { connectionId, force: false }
+          : { connectionId },
+      });
+      if (!res.ok) return res.failure;
+      return say(ready.token, spec.done);
+    },
+    { name: spec.name, description: spec.description, schema: WRITE_SCHEMA },
+  );
+}
+
+const TOOL_BUILDERS: Record<
+  string,
+  (sel: IntegrationSelection, ctx: ToolpackCtx) => StructuredToolInterface
+> = {
+  leaf_lookup_customer: buildLookupTool,
+  leaf_connection_status: buildConnectionTool,
+  leaf_open_invoices: buildInvoicesTool,
+  leaf_second_copy: buildSecondCopyTool,
+  leaf_extend_connection: (sel, ctx) =>
+    buildWriteTool(sel, ctx, {
+      name: "leaf_extend_connection",
+      path: "/integrations/customers/extend",
+      description:
+        "Extend (unblock) a connection after the customer confirms. connectionId must be one leaf_lookup_customer returned for this contact. Set confirmed to true only after they agree; false refuses and sends nothing.",
+      done: "The connection was extended.",
+    }),
+  leaf_clear_mac: (sel, ctx) =>
+    buildWriteTool(sel, ctx, {
+      name: "leaf_clear_mac",
+      path: "/integrations/customers/clear-mac",
+      description:
+        "Clear the MAC address of a connection after the customer confirms. connectionId must be one leaf_lookup_customer returned for this contact. Set confirmed to true only after they agree; false refuses and sends nothing.",
+      done: "The MAC address was cleared.",
+    }),
+  leaf_disconnect: (sel, ctx) =>
+    buildWriteTool(sel, ctx, {
+      name: "leaf_disconnect",
+      path: "/integrations/customers/disconnect",
+      description:
+        "Disconnect a connection after the customer confirms. connectionId must be one leaf_lookup_customer returned for this contact. force is always false. Set confirmed to true only after they agree; false refuses and sends nothing.",
+      done: "The connection was disconnected.",
+      forceFalse: true,
+    }),
+};
+
+export const leafAdminToolpack: Toolpack = {
+  catalogType: "LEAF_ADMIN",
+  toolSpecs: LEAF_TOOL_SPECS,
+  build(sel, ctx) {
+    const out: StructuredToolInterface[] = [];
+    for (const name of sel.enabledTools) {
+      const builder = TOOL_BUILDERS[name];
+      if (builder) out.push(builder(sel, ctx));
+    }
+    return out;
+  },
+};
+
+registerToolpack(leafAdminToolpack);

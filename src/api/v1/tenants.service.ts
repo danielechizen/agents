@@ -119,9 +119,8 @@ export async function getTenant(
   return toDto(row);
 }
 
-// Mutation schemas + inferred types. The schemas live here (present in every edition) so the type
-// surface callers import is stable; the mutation LOGIC that consumes them is Pro-only
-// (tenants.admin.service).
+// Mutation schemas + inferred types. The writes live in tenants.admin.service; the schemas stay
+// here so the MCP preview and the apply ask the same question.
 export const tenantUpdateSchema = z
   .object({
     name: z.string().min(1).max(200).optional(),
@@ -144,10 +143,8 @@ export const tenantCreateSchema = z
 
 export type TenantCreate = z.infer<typeof tenantCreateSchema>;
 
-// What `createTenant`/`updateTenant` decide about their INPUT, before any database is involved.
-// They live HERE rather than beside the mutations because the Free derivation swaps
-// tenants.admin.service for a stub, and the MCP preview has to ask the same question the apply asks
-// in both editions.
+// What create and update decide about their input before any write. The MCP preview asks the
+// same question the apply asks.
 export function assertTenantCreatable(input: TenantCreate): TenantCreate {
   return parseInput(tenantCreateSchema, input);
 }
@@ -174,7 +171,9 @@ export async function assertTenantSlugAvailable(
   }
 }
 
-export function assertTenantUpdatable(patch: TenantUpdate): TenantUpdate {
+export function assertTenantUpdatable(
+  patch: TenantUpdate,
+): TenantUpdate & { name: string } {
   const parsed = parseInput(tenantUpdateSchema, patch);
   if (parsed.name === undefined) {
     throw new AppError(
@@ -183,5 +182,5 @@ export function assertTenantUpdatable(patch: TenantUpdate): TenantUpdate {
       "errors.noUpdatableFields",
     );
   }
-  return parsed;
+  return { ...parsed, name: parsed.name };
 }

@@ -62,11 +62,8 @@ if (appUrl && suUrl) {
 const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
-// NOTE: The read tools (tenant_list/tenant_get) work in EVERY edition, so their fixture tenant is
-// seeded straight through Prisma rather than through tenant_create. Provisioning is the only
-// Pro-side surface here (tenantCreate calls the paired tenants.admin.service, a ProEditionError stub
-// in Free), so only that one case is @full-only — routing the whole fixture through it would have
-// dragged the reads down with it in the Free tree.
+// NOTE: The read tools seed their fixture through Prisma. tenant_create is covered on its own
+// row below, and the cleanup deletes every tenant this prefix created.
 describe.skipIf(!dbUp)("MCP fleet tools (DB)", () => {
   const prefix = `fleet-${process.pid}`;
   const slug = `${prefix}-seed`;
@@ -100,6 +97,21 @@ describe.skipIf(!dbUp)("MCP fleet tools (DB)", () => {
     if (r.ok) {
       const tenants = r.data.tenants as { id: string; slug: string }[];
       expect(tenants.find((t) => t.slug === slug)).toBeDefined();
+    }
+  });
+
+  test("tenant_create provisions another tenant", async () => {
+    const createdSlug = `${prefix}-created`;
+    const r = await tenantCreate(
+      superAdmin(),
+      { name: "Fleet Created", slug: createdSlug, dry_run: false },
+      { base: appDb },
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const tenant = r.data.tenant as { slug: string; name: string };
+      expect(tenant.slug).toBe(createdSlug);
+      expect(tenant.name).toBe("Fleet Created");
     }
   });
 

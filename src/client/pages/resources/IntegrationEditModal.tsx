@@ -86,6 +86,8 @@ function catalogLabelOf(
       return t("integrations.catalog.GOOGLE_SHEETS.label", "Google Sheets");
     case "RESEND":
       return t("integrations.catalog.RESEND.label", "Resend");
+    case "LEAF_ADMIN":
+      return t("integrations.catalog.LEAF_ADMIN.label", "Leaf Admin");
     default:
       return c?.label ?? "";
   }
@@ -127,6 +129,11 @@ function catalogHintOf(
       return t(
         "integrations.catalog.RESEND.hint",
         "Transactional email from a fixed sender address.",
+      );
+    case "LEAF_ADMIN":
+      return t(
+        "integrations.catalog.LEAF_ADMIN.hint",
+        "Customer, contract, invoice and a second copy.",
       );
     default:
       return c.description ?? "";
@@ -741,6 +748,11 @@ export function IntegrationEditModal({
           "integrations.catalog.RESEND.description",
           "Transactional email over a Resend API key. The agent sends confirmations, reminders and follow-ups; the sender address is fixed in the settings below.",
         );
+      case "LEAF_ADMIN":
+        return t(
+          "integrations.catalog.LEAF_ADMIN.description",
+          "ERP for internet providers. Looks up the customer, the contract, the invoice and a second copy.",
+        );
       default:
         return c?.description ?? "";
     }
@@ -779,6 +791,7 @@ export function IntegrationEditModal({
   const formRef = useRef(form);
   formRef.current = form;
   const isGeneric = form.catalogType === "GENERIC";
+  const isLeaf = form.catalogType === "LEAF_ADMIN";
   const showsSignature =
     isGeneric && form.inboundAuthStrategy === "HMAC_SHA256";
   const openFields =
@@ -2106,7 +2119,7 @@ export function IntegrationEditModal({
               </div>
             )}
 
-            {/* ── Inbound webhook: Asaas payments, or the operator's own system (GENERIC) ── */}
+            {/* Inbound webhook for this catalog type. */}
             {selectedCatalog?.supportsInbound && (
               <div className="border-border bg-bg-secondary flex flex-col gap-3 rounded-lg border p-3">
                 <div className="flex items-center gap-2">
@@ -2120,7 +2133,9 @@ export function IntegrationEditModal({
                           "integrations.webhook.titleGeneric",
                           "Incoming webhook",
                         )
-                      : t("integrations.webhook.title", "Payment webhook")}
+                      : isLeaf
+                        ? t("integrations.webhook.titleLeaf", "Paid invoice")
+                        : t("integrations.webhook.title", "Payment webhook")}
                   </span>
                 </div>
                 <p className="text-text-muted text-xs">
@@ -2130,10 +2145,15 @@ export function IntegrationEditModal({
                         "After saving, give this URL and its secret to your system. An HTTP tool that sends {{ref}} hands your system a reference to the conversation; your system then POSTs events with that reference here, and the agent passes each one on to the customer (or leaves a private note when a person holds the conversation). A payment gateway that notifies with only the payment id, such as Mercado Pago, uses the same webhook: paste this URL into the gateway's dashboard, and set its signature and the payment lookup below.",
                         { ref: "{{conversation_ref}}" },
                       )
-                    : t(
-                        "integrations.webhook.explain",
-                        "After saving, paste the URL into Asaas; when a charge is paid, the agent resumes its conversation and decides whether to reply.",
-                      )}
+                    : isLeaf
+                      ? t(
+                          "integrations.webhook.explainLeaf",
+                          "After saving, paste the URL into Leaf Admin. When an invoice is paid, the agent resumes that conversation.",
+                        )
+                      : t(
+                          "integrations.webhook.explain",
+                          "After saving, paste the URL into Asaas; when a charge is paid, the agent resumes its conversation and decides whether to reply.",
+                        )}
                 </p>
                 {/* The URL only exists once the instance does, so it shows on edit, never create. */}
                 {editId && (
@@ -2222,10 +2242,17 @@ export function IntegrationEditModal({
                   <SwitchField
                     checked={cfg.notifyOnPayment !== false}
                     onCheckedChange={(v) => setCfg({ notifyOnPayment: v })}
-                    label={t(
-                      "integrations.config.notifyOnPayment",
-                      "Wake the agent when a payment is confirmed",
-                    )}
+                    label={
+                      isLeaf
+                        ? t(
+                            "integrations.config.notifyOnInvoicePaid",
+                            "Wake the agent when an invoice is paid",
+                          )
+                        : t(
+                            "integrations.config.notifyOnPayment",
+                            "Wake the agent when a payment is confirmed",
+                          )
+                    }
                   />
                 )}
                 <div className="grid gap-3 sm:grid-cols-2">

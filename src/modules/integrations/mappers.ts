@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { leafAdminMapper } from "./leaf-admin-mapper";
 import {
   GENERIC_TEXT_MAX_CHARS,
   type InboundMapper,
@@ -7,8 +8,8 @@ import {
 
 // Registry of inbound mappers keyed by catalogType. Pure functions only. Adding a real
 // integration = one entry here + its zod schema; the receptor (route-token, auth, ack/async,
-// idempotency, correlation, dispatch) is untouched. GENERIC and Asaas are the inbound integrations
-// (Calendar/Drive/Resend are outbound-only); a catalog entry without a mapper fails closed.
+// idempotency, correlation, dispatch) is untouched. GENERIC, Asaas and Leaf Admin are the inbound
+// integrations (Calendar/Drive/Sheets/Resend are outbound-only); a catalog entry without a mapper fails closed.
 
 const REGISTRY = new Map<string, InboundMapper>();
 
@@ -138,3 +139,4 @@ const asaasMapper: InboundMapper = {
 };
 
 registerMapper(asaasMapper);
+registerMapper(leafAdminMapper);
