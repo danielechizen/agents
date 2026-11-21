@@ -1,11 +1,13 @@
 import type { TFunction } from "i18next";
 import {
+  Cable,
   CalendarCheck,
   CalendarCheck2,
   CalendarClock,
   CalendarDays,
   CalendarPlus,
   CalendarX2,
+  Copy,
   FileSearch,
   Link,
   type LucideIcon,
@@ -17,6 +19,10 @@ import {
   Send,
   Sheet,
   TableProperties,
+  TimerReset,
+  Unplug,
+  UserRound,
+  Wifi,
   Wrench,
 } from "lucide-react";
 
@@ -42,6 +48,13 @@ export const TOOLPACK_TOOL_ICONS: Record<string, LucideIcon> = {
   sheets_update_row: Sheet,
   resend_send_email: Mail,
   resend_email_status: MailCheck,
+  leaf_lookup_customer: UserRound,
+  leaf_connection_status: Wifi,
+  leaf_open_invoices: Receipt,
+  leaf_second_copy: Copy,
+  leaf_extend_connection: TimerReset,
+  leaf_clear_mac: Cable,
+  leaf_disconnect: Unplug,
 };
 
 // An operator-only note about one ARGUMENT, shown on that argument's pill in the console. Not in the
@@ -256,6 +269,69 @@ export function toolpackToolMeta(name: string, t: TFunction): ToolpackToolMeta {
         description: t(
           "toolpackTools.resend_email_status.desc",
           "Check whether an email sent with Send email was delivered or bounced.",
+        ),
+      };
+    case "leaf_lookup_customer":
+      return {
+        icon,
+        label: t("toolpackTools.leaf_lookup_customer.label", "Customer"),
+        description: t(
+          "toolpackTools.leaf_lookup_customer.desc",
+          "Look up the customer and their contracts.",
+        ),
+      };
+    case "leaf_connection_status":
+      return {
+        icon,
+        label: t("toolpackTools.leaf_connection_status.label", "Connection"),
+        description: t(
+          "toolpackTools.leaf_connection_status.desc",
+          "Connection status for a contract this conversation found.",
+        ),
+      };
+    case "leaf_open_invoices":
+      return {
+        icon,
+        label: t("toolpackTools.leaf_open_invoices.label", "Invoices"),
+        description: t(
+          "toolpackTools.leaf_open_invoices.desc",
+          "Open and overdue invoices for a contract.",
+        ),
+      };
+    case "leaf_second_copy":
+      return {
+        icon,
+        label: t("toolpackTools.leaf_second_copy.label", "Second copy"),
+        description: t(
+          "toolpackTools.leaf_second_copy.desc",
+          "PIX, boleto or card second copy of an invoice.",
+        ),
+      };
+    case "leaf_extend_connection":
+      return {
+        icon,
+        label: t("toolpackTools.leaf_extend_connection.label", "Extend"),
+        description: t(
+          "toolpackTools.leaf_extend_connection.desc",
+          "Extend the connection after the customer agrees.",
+        ),
+      };
+    case "leaf_clear_mac":
+      return {
+        icon,
+        label: t("toolpackTools.leaf_clear_mac.label", "Clear MAC"),
+        description: t(
+          "toolpackTools.leaf_clear_mac.desc",
+          "Clear the connection MAC after the customer agrees.",
+        ),
+      };
+    case "leaf_disconnect":
+      return {
+        icon,
+        label: t("toolpackTools.leaf_disconnect.label", "Disconnect"),
+        description: t(
+          "toolpackTools.leaf_disconnect.desc",
+          "Disconnect the customer after they agree.",
         ),
       };
     default:

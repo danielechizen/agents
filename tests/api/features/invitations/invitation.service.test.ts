@@ -226,11 +226,4 @@ describe.skipIf(!dbUp)("invitation service (DB)", () => {
     const after = await listInvites(tenantA, appDb);
     expect(after.some((i) => i.email === "scoped@x.com")).toBe(false);
   });
-
-  // NOTE: Full-only — createTenant is the paired tenants.admin.service, a ProEditionError stub in
-  // Free, so this case can only fail there. It rides along in this file because it reuses the tenant
-  // fixtures, not because provisioning is part of the invitation surface.
-  // The three symbols are pulled in DYNAMICALLY, inside the block: as top-level imports they would
-  // be left unused once Free strips the test, and marking the import region instead is not workable
-  // — the blank line biome demands around it lands differently in each of the three trees.
 });

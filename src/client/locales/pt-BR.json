@@ -3484,6 +3484,11 @@
         "hint": "Adiciona, busca e atualiza linhas em uma aba de planilha.",
         "label": "Google Sheets"
       },
+      "LEAF_ADMIN": {
+        "description": "ERP para provedores de internet. Consulta cliente, contrato, fatura e segunda via.",
+        "hint": "Cliente, contrato, fatura e segunda via.",
+        "label": "Leaf Admin"
+      },
       "RESEND": {
         "description": "E-mail transacional com uma chave de API do Resend. O agente envia confirmações, lembretes e follow-ups; o remetente é fixado nas configurações abaixo.",
         "hint": "E-mail transacional de um remetente fixo.",
@@ -3535,6 +3540,7 @@
       "minutesPlaceholder": "Minutos",
       "noFoldersMatch": "Nenhuma pasta corresponde ao filtro.",
       "noFoldersScopeHint": "Nenhuma pasta encontrada. Contas conectadas com \"Drive (arquivos do app)\" só veem arquivos criados pelo app; reconecte com \"Drive (leitura)\" ou \"Drive (acesso completo)\".",
+      "notifyOnInvoicePaid": "Acordar o agente quando uma fatura for paga",
       "notifyOnPayment": "Acordar o agente quando um pagamento for confirmado",
       "remindersAdd": "Adicionar lembrete",
       "remindersAmount": "Quantidade",
@@ -3682,6 +3688,7 @@
     "webhook": {
       "explain": "Depois de salvar, cole a URL no Asaas; quando a cobrança for paga, o agente retoma a conversa e decide se responde.",
       "explainGeneric": "Depois de salvar, passe esta URL e o segredo para o seu sistema. Uma ferramenta HTTP que envia {{ref}} entrega ao seu sistema uma referência da conversa; o seu sistema então faz POST dos eventos aqui com essa referência, e o agente repassa cada um ao cliente (ou deixa uma nota privada quando uma pessoa está com a conversa). Com um gateway de pagamento que avisa só com o número do pagamento, como o Mercado Pago, é o mesmo webhook: você cola esta URL no painel do gateway, e a assinatura dele e a consulta do pagamento se configuram logo abaixo.",
+      "explainLeaf": "Depois de salvar, cole a URL no Leaf Admin. Quando uma fatura é paga, o agente retoma a conversa.",
       "rotate": "Gerar nova URL",
       "rotateConfirm": "Gerar",
       "rotateError": "Não foi possível gerar.",
@@ -3689,6 +3696,7 @@
       "rotateTitle": "Gerar uma nova URL",
       "title": "Webhook de pagamento",
       "titleGeneric": "Webhook de entrada",
+      "titleLeaf": "Fatura paga",
       "url": "URL do webhook",
       "urlHint": "Cole esta URL no painel do provedor.",
       "urlMissing": "Esta integração foi criada antes de a URL poder ser exibida de novo, então não temos mais como mostrá-la. Gere uma nova e atualize no painel do provedor.",
@@ -5146,6 +5154,7 @@
   },
   "tenant": {
     "create": "Criar tenant",
+    "createFailed": "Não foi possível criar o tenant.",
     "deepLinkUnavailable": "Este link aponta para um tenant que você não pode abrir. Nada foi trocado.",
     "deepLinkUnverified": "Não foi possível conferir este link",
     "deepLinkUnverifiedHelp": "Este link abre outro tenant, e não foi possível ler a lista de tenants que você pode abrir. Nada foi trocado.",
@@ -5153,8 +5162,11 @@
     "label": "Tenant",
     "name": "Nome",
     "none": "Nenhum tenant ainda.",
+    "required": "Nome e slug são obrigatórios.",
     "select": "Selecionar tenant",
     "slug": "Slug",
+    "slugHint": "Letras minúsculas, números e hífens. Identifica o tenant e não muda depois.",
+    "slugInUse": "Este slug já está em uso.",
     "switcher": "Trocar de tenant"
   },
   "testMode": {
@@ -5268,6 +5280,34 @@
     "drive_send_file": {
       "desc": "Envia um arquivo do Drive ao cliente como anexo.",
       "label": "Enviar arquivo"
+    },
+    "leaf_clear_mac": {
+      "desc": "Limpa o MAC da conexão depois que o cliente concorda.",
+      "label": "Limpar MAC"
+    },
+    "leaf_connection_status": {
+      "desc": "Status da conexão de um contrato que esta conversa encontrou.",
+      "label": "Conexão"
+    },
+    "leaf_disconnect": {
+      "desc": "Desconecta o cliente depois que ele concorda.",
+      "label": "Desconectar"
+    },
+    "leaf_extend_connection": {
+      "desc": "Libera a conexão depois que o cliente concorda.",
+      "label": "Liberar conexão"
+    },
+    "leaf_lookup_customer": {
+      "desc": "Consulta o cliente e os contratos.",
+      "label": "Cliente"
+    },
+    "leaf_open_invoices": {
+      "desc": "Faturas em aberto e em atraso de um contrato.",
+      "label": "Faturas"
+    },
+    "leaf_second_copy": {
+      "desc": "Segunda via da fatura em PIX, boleto ou cartão.",
+      "label": "Segunda via"
     },
     "resend_email_status": {
       "desc": "Verifica se um e-mail enviado com Enviar e-mail foi entregue ou devolveu.",

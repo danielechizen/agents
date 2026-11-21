@@ -111,6 +111,9 @@ export const AUDIT_ACTIONS = [
   "occurrence_monitor.created",
   "occurrence_monitor.deleted",
   "occurrence_monitor.updated",
+  "tenant.create",
+  "tenant.delete",
+  "tenant.update",
   "tenant_settings.approval_link_set",
   "tenant_settings.company_set",
   "tenant_settings.embedding_set",
@@ -166,6 +169,8 @@ export const FLEET_LEVEL_ACTIONS: readonly AuditAction[] = [
   "mcp_client.delete",
   "mcp_client.update",
   "mcp_token.revoke",
+  "tenant.create",
+  "tenant.delete",
 ];
 
 export function isFleetLevelAction(action: string): boolean {

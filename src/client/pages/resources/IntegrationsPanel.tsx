@@ -44,6 +44,8 @@ export function IntegrationsPanel() {
         return t("integrations.catalog.GOOGLE_SHEETS.label", "Google Sheets");
       case "RESEND":
         return t("integrations.catalog.RESEND.label", "Resend");
+      case "LEAF_ADMIN":
+        return t("integrations.catalog.LEAF_ADMIN.label", "Leaf Admin");
       default:
         return c?.label ?? "";
     }
