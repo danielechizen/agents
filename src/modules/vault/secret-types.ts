@@ -199,6 +199,19 @@ export const SECRET_TYPES: SecretType[] = [
       path: "/myAccount",
     },
   },
+  // Leaf Admin ERP. The operator types the system root (https, no /api at the end); the probe
+  // and the agent tool append /api/v2. The token is the raw value of the header x-auth-header.
+  {
+    id: "leaf_admin",
+    injection: "header",
+    name: "x-auth-header",
+    service: "leaf_admin",
+    baseUrl: "required",
+    test: {
+      needsBase: true,
+      path: "/api/v2/integrations/contracts?page=1&limit=1",
+    },
+  },
   {
     id: "resend",
     injection: "bearer",

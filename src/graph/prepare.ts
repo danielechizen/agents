@@ -165,7 +165,10 @@ import { readSplitConfig, type SplitConfig } from "@/modules/split/service";
 import { llmNormalizeForSpeech } from "@/modules/tts/normalize";
 import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
 import { readTtsConfig, type TtsConfig } from "@/modules/tts/settings";
-import { resolveInjectableCredential } from "@/modules/vault/injectable";
+import {
+  resolveInjectableCredential,
+  resolveInjectableCredentialEntry,
+} from "@/modules/vault/injectable";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
 import { LAST_MESSAGE_RULE } from "./anthropic-progress-notes";
 import { chatwootThreadId, getCheckpointer } from "./checkpointer";
@@ -1498,6 +1501,8 @@ export async function buildToolset(
 ): Promise<StructuredToolInterface[]> {
   const resolveCredential = (ref: string) =>
     resolveInjectableCredential(ctx.base, ctx.tenantId, ref);
+  const resolveCredentialEntry = (ref: string) =>
+    resolveInjectableCredentialEntry(ctx.base, ctx.tenantId, ref);
   // Resolves an integration's chosen BusinessHours by id → the whole schedule (scoped read; RLS
   // fences it to this tenant, so a stale/other-tenant id yields null ⇒ the Calendar availability tool
   // treats the schedule as "always on"). Mirrors resolveCredential's bound-closure shape.
@@ -1641,6 +1646,7 @@ export async function buildToolset(
     // null on the playground (no mirrored contact) → such tools fail closed.
     contactDbId: cfg.contactDbId,
     resolveCredential,
+    resolveCredentialEntry,
     // NOTE: Read at call time, like every other resolver here: a turn that sends no email pays no query.
     resolveContactEmail: async () => {
       const id = cfg.contactDbId;

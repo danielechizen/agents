@@ -20,7 +20,7 @@ import {
   undisclosedMoved,
 } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
-import { resolveInjectableCredential } from "@/modules/vault/injectable";
+import { resolveInjectableCredentialEntry } from "@/modules/vault/injectable";
 import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
 import { isUsableHeaderName } from "@/modules/webhooks/inbound/auth";
 import {
@@ -308,6 +308,7 @@ const LEAF_URL_WHY = {
   slash: "must not end with a slash",
   userinfo: "must not include a username or password",
   query: "must not include a query or fragment",
+  api: "must not end with /api",
 } as const;
 
 function assertLeafSystemUrl(
@@ -315,8 +316,10 @@ function assertLeafSystemUrl(
   config: Record<string, unknown>,
 ): void {
   if (catalogType !== "LEAF_ADMIN") return;
-  const problem = leafSystemUrlProblem(config.system_url);
-  if (!problem) return;
+  const raw = config.system_url;
+  if (raw === undefined || raw === null || raw === "") return;
+  const problem = leafSystemUrlProblem(raw);
+  if (!problem || problem === "empty") return;
   throw new AppError(
     `config.system_url ${LEAF_URL_WHY[problem]}`,
     422,
@@ -785,8 +788,8 @@ function takeLeafConnectionTest(tenantId: bigint, now: number): boolean {
   return true;
 }
 
-// The button on a saved Leaf Admin integration. The URL and the generic vault
-// token are the ones already stored. The answer never carries the token.
+// The button on a saved Leaf Admin integration. The URL and the token are the
+// ones on the Leaf Admin credential. The answer never carries the token.
 export async function testLeafConnection(
   ctx: TenantContext,
   id: bigint,
@@ -794,7 +797,7 @@ export async function testLeafConnection(
   deps: {
     fetchImpl?: typeof fetch;
     assertSafe?: (url: string) => Promise<URL>;
-    resolveCredential?: typeof resolveInjectableCredential;
+    resolveCredentialEntry?: typeof resolveInjectableCredentialEntry;
     now?: number;
   } = {},
 ): Promise<LeafProbe | { ok: false; code: "unread" }> {
@@ -820,24 +823,21 @@ export async function testLeafConnection(
       { integration: row.catalogType },
     );
   }
-  const config = (row.config ?? {}) as Record<string, unknown>;
-  let token: string | null = null;
-  if (row.credentialRef) {
-    try {
-      token = await (deps.resolveCredential ?? resolveInjectableCredential)(
-        base,
-        tenantId,
-        row.credentialRef,
-      );
-    } catch {
-      logger.warn(
-        { phase: "credential" },
-        "leaf-admin: credential read failed",
-      );
-      return { ok: false, code: "unread" };
-    }
+  if (!row.credentialRef) return { ok: false, code: "missing_token" };
+  let entry: Awaited<ReturnType<typeof resolveInjectableCredentialEntry>>;
+  try {
+    entry = await (
+      deps.resolveCredentialEntry ?? resolveInjectableCredentialEntry
+    )(base, tenantId, row.credentialRef);
+  } catch {
+    logger.warn({ phase: "credential" }, "leaf-admin: credential read failed");
+    return { ok: false, code: "unread" };
   }
-  return probeLeafAdmin(config, token, {
+  if (!entry) return { ok: false, code: "unread" };
+  if (entry.kind !== "leaf_admin") return { ok: false, code: "wrong_kind" };
+  if (!entry.baseUrl) return { ok: false, code: "missing_url" };
+  if (!entry.value) return { ok: false, code: "missing_token" };
+  return probeLeafAdmin({ system_url: entry.baseUrl }, entry.value, {
     fetchImpl: deps.fetchImpl,
     assertSafe: deps.assertSafe,
     beforeFetch: () => {

@@ -21,6 +21,8 @@ export interface InjectableCredential {
   kind: string | null;
   // Header/query name for the kinds whose name the operator supplies (VaultEntry.paramName).
   paramName: string | null;
+  // The operator base, when this kind stores one (Leaf Admin's ERP root). null when it does not.
+  baseUrl: string | null;
 }
 
 function sysCtx(tenantId: bigint): TenantContext {
@@ -50,10 +52,20 @@ export async function resolveInjectableCredentialEntry(
       entry.kind === "mcp_oauth"
         ? await ensureFreshMcpAccessToken(sysCtx(tenantId), id, base)
         : await ensureFreshGoogleAccessToken(sysCtx(tenantId), id, base);
-    return { value, kind: entry.kind, paramName: entry.paramName };
+    return {
+      value,
+      kind: entry.kind,
+      paramName: entry.paramName,
+      baseUrl: entry.baseUrl,
+    };
   }
   return typeof entry.secret === "string"
-    ? { value: entry.secret, kind: entry.kind, paramName: entry.paramName }
+    ? {
+        value: entry.secret,
+        kind: entry.kind,
+        paramName: entry.paramName,
+        baseUrl: entry.baseUrl,
+      }
     : null;
 }
 

@@ -145,7 +145,7 @@ describe.skipIf(!dbUp)("the gate's time budget", () => {
       // Slow but not fatal: most of the budget goes here, and the rest belongs to the request.
       resolveCredential: async () => {
         jest.advanceTimersByTime(700);
-        return { value: "k", kind: null, paramName: null };
+        return { value: "k", kind: null, paramName: null, baseUrl: null };
       },
       // Answers headers and then stalls, which under one shared budget is a timeout well before
       // the request would have had a fresh 1200ms of its own.

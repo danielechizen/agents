@@ -1,6 +1,6 @@
-// The ERP base an operator types on a Leaf Admin integration. The tool appends
-// `/api/v2`. A write refuses an empty value, anything other than https, and a
-// trailing slash. A slash already stored is still stripped at call time.
+// The ERP root an operator types on a Leaf Admin credential. The client appends
+// `/api/v2`. https only, no userinfo, no query, and the path must not already be
+// `/api` or `/api/v2`. A slash already stored is still stripped at call time.
 
 export type LeafSystemUrlProblem =
   | "empty"
@@ -8,7 +8,8 @@ export type LeafSystemUrlProblem =
   | "https"
   | "slash"
   | "userinfo"
-  | "query";
+  | "query"
+  | "api";
 
 export function leafSystemUrlProblem(
   raw: unknown,
@@ -25,6 +26,15 @@ export function leafSystemUrlProblem(
   if (url.protocol !== "https:") return "https";
   if (url.username || url.password) return "userinfo";
   if (url.search || url.hash) return "query";
+  const path = url.pathname.replace(/\/+$/, "");
+  if (
+    path === "/api" ||
+    path.endsWith("/api") ||
+    path === "/api/v2" ||
+    path.endsWith("/api/v2")
+  ) {
+    return "api";
+  }
   return null;
 }
 

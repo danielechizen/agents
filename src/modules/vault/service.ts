@@ -12,6 +12,7 @@ import {
   undisclosedMoved,
 } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
+import { leafSystemUrlProblem } from "@/modules/integrations/leaf-system-url";
 import {
   runSecretTest,
   type SecretTestDeps,
@@ -900,10 +901,32 @@ export interface CreateVaultEntryInput {
 // so an `openai` credential would send its key to a host the console never shows; the refusal names
 // `openai_compatible`). Checked AFTER normalization, which turns "   " into empty. Empty stays empty
 // on a kind with no input, since the console submits the field on every kind.
+const LEAF_BASE_WHY = {
+  invalid: "is not a valid URL",
+  https: "must use https",
+  slash: "must not end with a slash",
+  userinfo: "must not include a username or password",
+  query: "must not include a query or fragment",
+  api: "must not end with /api",
+} as const;
+
 function normalizeBaseUrlForKind(
   raw: string | null | undefined,
   kind: string,
 ): string | null {
+  if (kind === "leaf_admin" && raw != null && raw.trim() !== "") {
+    const problem = leafSystemUrlProblem(raw);
+    if (problem && problem !== "empty") {
+      const why = LEAF_BASE_WHY[problem];
+      throw new AppError(
+        `The ERP base URL ${why}`,
+        400,
+        "errors.vaultLeafBaseUrl",
+        { problem: why },
+        "baseUrl",
+      );
+    }
+  }
   const normalized =
     raw == null || raw === "" ? null : validateBaseUrl(raw) || null;
   if (normalized === null) {

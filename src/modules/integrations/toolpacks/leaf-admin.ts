@@ -11,6 +11,7 @@ import { fetchBounded, OutboundTimeoutError } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
+import { resolveInjectableCredentialEntry } from "@/modules/vault/injectable";
 import { leafInvoiceExternalId } from "../leaf-admin-mapper";
 import { leafApiBase, leafSystemUrlProblem } from "../leaf-system-url";
 import {
@@ -21,9 +22,9 @@ import {
   type ToolSpec,
 } from "./types";
 
-// Leaf Admin outbound toolpack. system_url (https, then /api/v2) and the vault API key are
-// instance config; the contact phone is the Chatwoot mirror. TLS verification stays the
-// runtime default. A write runs only when confirmed is true.
+// Leaf Admin outbound toolpack. The ERP root and the token come from the leaf_admin
+// credential (header x-auth-header, then /api/v2). The contact phone is the Chatwoot
+// mirror. TLS verification stays the runtime default. A write runs only when confirmed is true.
 
 const TIMEOUT_MS = 15_000;
 const LIST_CAP = 64_000;
@@ -112,33 +113,36 @@ function invalidDetail(detail: unknown): boolean {
   );
 }
 
-function resolveBase(
-  config: Record<string, unknown>,
-): { base: string } | { refusal: string } {
-  const raw =
-    typeof config.system_url === "string" ? config.system_url.trim() : "";
-  if (!raw) {
-    return {
-      refusal: "Leaf Admin system_url is not configured on this integration.",
-    };
+const LEAF_MISSING_URL =
+  "Falta a URL base do ERP. No cofre, edite a credencial do tipo Leaf Admin e preencha URL base do ERP (https, sem /api no final).";
+const LEAF_MISSING_TOKEN =
+  "Falta o token do Leaf Admin. No cofre, edite a credencial do tipo Leaf Admin e preencha o token.";
+const LEAF_WRONG_KIND =
+  "A credencial não é do tipo Leaf Admin. No cofre, crie uma credencial Leaf Admin com a URL base do ERP e o token.";
+
+function leafUrlRefusal(raw: string): string {
+  const problem = leafSystemUrlProblem(raw.trim().replace(/\/+$/, ""));
+  if (problem === "https") return "A URL base do ERP precisa usar https.";
+  if (problem === "api") {
+    return "A URL base do ERP não pode terminar com /api. O cliente acrescenta /api/v2.";
+  }
+  if (problem === "userinfo") {
+    return "A URL base do ERP não pode ter usuário nem senha.";
+  }
+  if (problem === "query") {
+    return "A URL base do ERP não pode ter query nem fragmento.";
+  }
+  if (problem === "empty") return LEAF_MISSING_URL;
+  return "A URL base do ERP não é válida.";
+}
+
+function resolveBase(raw: unknown): { base: string } | { refusal: string } {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    return { refusal: LEAF_MISSING_URL };
   }
   const base = leafApiBase(raw);
   if (base) return { base };
-  const problem = leafSystemUrlProblem(raw.replace(/\/+$/, ""));
-  if (problem === "https") {
-    return { refusal: "Leaf Admin system_url must use https." };
-  }
-  if (problem === "userinfo") {
-    return {
-      refusal: "Leaf Admin system_url must not include a username or password.",
-    };
-  }
-  if (problem === "query") {
-    return {
-      refusal: "Leaf Admin system_url must not include a query or fragment.",
-    };
-  }
-  return { refusal: "Leaf Admin system_url is not a valid URL." };
+  return { refusal: leafUrlRefusal(raw) };
 }
 
 type LeafNo = { ok: false; failure: ToolFailure };
@@ -148,30 +152,38 @@ async function prepare(
   sel: IntegrationSelection,
   ctx: ToolpackCtx,
 ): Promise<Ready | LeafNo> {
-  const base = resolveBase(sel.config);
-  if ("refusal" in base)
-    return { ok: false, failure: toolFailure(base.refusal) };
-  let token: string | null = null;
+  if (!sel.credentialRef) {
+    return { ok: false, failure: toolFailure(LEAF_WRONG_KIND) };
+  }
+  let entry: {
+    value: string;
+    kind: string | null;
+    baseUrl: string | null;
+  } | null = null;
   try {
-    token = sel.credentialRef
-      ? await ctx.resolveCredential(sel.credentialRef)
-      : null;
+    const read =
+      ctx.resolveCredentialEntry ??
+      ((ref: string) =>
+        resolveInjectableCredentialEntry(ctx.base, ctx.tenantId, ref));
+    entry = await read(sel.credentialRef);
   } catch {
     logger.warn({ phase: "credential" }, "leaf-admin: credential read failed");
     return {
       ok: false,
-      failure: toolFailure("Leaf Admin credential could not be read."),
+      failure: toolFailure("A credencial do Leaf Admin não pôde ser lida."),
     };
   }
-  if (!token) {
-    return {
-      ok: false,
-      failure: toolFailure(
-        "Leaf Admin credential is not configured for this integration.",
-      ),
-    };
+  if (entry?.kind !== "leaf_admin") {
+    return { ok: false, failure: toolFailure(LEAF_WRONG_KIND) };
   }
-  return { ok: true, token, base: base.base };
+  const base = resolveBase(entry.baseUrl);
+  if ("refusal" in base) {
+    return { ok: false, failure: toolFailure(base.refusal) };
+  }
+  if (!entry.value) {
+    return { ok: false, failure: toolFailure(LEAF_MISSING_TOKEN) };
+  }
+  return { ok: true, token: entry.value, base: base.base };
 }
 
 function leafUrl(
@@ -309,6 +321,9 @@ export type LeafProbe =
       ok: false;
       code:
         | "missing"
+        | "missing_url"
+        | "missing_token"
+        | "wrong_kind"
         | "blocked"
         | "rejected"
         | "answered"
@@ -341,11 +356,11 @@ export async function probeLeafAdmin(
     beforeFetch?: () => void;
   } = {},
 ): Promise<LeafProbe> {
-  const base = resolveBase(config);
+  const base = resolveBase(config.system_url);
   if ("refusal" in base) {
     return {
       ok: false,
-      code: base.refusal.includes("not configured") ? "missing" : "blocked",
+      code: base.refusal === LEAF_MISSING_URL ? "missing" : "blocked",
     };
   }
   if (!token) return { ok: false, code: "missing" };

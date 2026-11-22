@@ -6,20 +6,20 @@ A verificação TLS fica ligada. O adaptador do Leaf Agent manda `verify: false`
 
 ## URL e cabeçalho
 
-O token fica na credencial genérica do cofre e a URL no campo da integração. `config.system_url` é a raiz https do sistema, sem barra no final e sem `/api`. O cliente chama `{system_url}/api/v2`. `http`, usuário e senha na URL, query e fragmento são recusados antes de gravar. Uma barra que já esteja gravada é removida na chamada.
+A URL e o token ficam na credencial do tipo `leaf_admin`, não numa credencial genérica. O campo **URL base do ERP** é a raiz https do sistema, sem barra no final e sem `/api`. O cliente chama `{url}/api/v2`. `http`, usuário e senha na URL, query, fragmento e um caminho que já termina em `/api` são recusados antes de gravar. Uma barra que já esteja gravada é removida na chamada.
 
-Cada request manda `x-auth-header: <api_key>`. A chave é o texto puro da credencial genérica apontada por `credentialRef`. Ela não entra no log, na mensagem devolvida ao modelo nem no corpo que o modelo vê.
+Cada request manda `x-auth-header` com o texto puro do token dessa credencial. A credencial genérica não tem teste de conexão e a ferramenta não a lê. Sem a URL, ou sem o token, a ferramenta diz em português qual dos dois falta. O token não entra no log, na mensagem devolvida ao modelo nem no corpo que o modelo vê.
 
 Sucesso é HTTP 2xx **e** `statusCode` `1` ou `"ok"` (sem distinguir maiúsculas; `"1"` também vale).
 
 Credencial inválida, e a chamada fecha: HTTP 401 ou 403, ou `detailCode` `19`, `43`, `bad_token` ou `forbidden`.
 
-O request não segue redirect, estoura em 15 s e lê no máximo um prefixo do corpo. A URL montada passa pelo guarda SSRF (`assertSafeOutboundUrl`): https e host público. A origem é a da config, nunca um argumento da ferramenta.
+O request não segue redirect, estoura em 15 s e lê no máximo um prefixo do corpo. A URL montada passa pelo guarda SSRF (`assertSafeOutboundUrl`): https e host público. A origem é a URL base da credencial Leaf Admin, nunca um argumento da ferramenta.
 
 ## Cadastro
 
-1. No cofre, crie um segredo genérico cujo valor é a `api_key` (texto puro, não um JSON). Não há um tipo de credencial só do Leaf: o token é essa credencial genérica.
-2. Em Recursos → Integrações, crie ou abra a instância **Leaf Admin**. Escolha essa credencial e preencha **URL base do ERP** (`https`, sem barra no final e sem `/api`). **Testar comunicação** chama o Leaf com a URL e o token já salvos, nesta instância, e mostra sucesso ou o erro sem devolver o token.
+1. No cofre, ou ao criar a credencial a partir da integração, escolha o tipo **Leaf Admin**. Preencha **URL base do ERP** (`https`, sem barra no final e sem `/api`) e o **token**. **Testar conexão** aparece nesse tipo, como nos outros tipos de serviço, e continua ausente no genérico.
+2. Em Componentes → Integrações, crie a instância **Leaf Admin** e escolha essa credencial. **Testar comunicação**, na integração já salva, usa a URL e o token dessa credencial e não devolve o token.
 3. O webhook exige autenticação (`NONE` é recusado na gravação). Na mesma tela, estratégia **cabeçalho estático** e um segredo do cofre em `inboundSecretRef`. O nome padrão do cabeçalho é `x-webhook-token`. `config.authHeader` troca o nome.
 
 ## Identidade

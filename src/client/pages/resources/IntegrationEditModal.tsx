@@ -52,10 +52,6 @@ import {
   REMINDER_OFFSET_RANGE,
 } from "@/modules/integrations/calendar-config-ranges";
 import {
-  type LeafSystemUrlProblem,
-  leafSystemUrlProblem,
-} from "@/modules/integrations/leaf-system-url";
-import {
   FetchBackFields,
   type FetchBackTool,
   fetchBackFields,
@@ -274,7 +270,7 @@ function defaultConfig(catalogType: string): Record<string, unknown> {
     case "RESEND":
       return { from: "", replyTo: "" };
     case "LEAF_ADMIN":
-      return { system_url: "", notifyOnPayment: true };
+      return { notifyOnPayment: true };
     default:
       return {};
   }
@@ -328,12 +324,27 @@ function leafProbeMessage(t: TFunction, probe: LeafProbeView): string {
     case "blocked":
       return t(
         "integrations.config.leafTestBlocked",
-        "The saved URL was refused.",
+        "The ERP base URL on the credential was refused.",
       );
     case "unread":
       return t(
         "integrations.config.leafTestUnread",
         "The saved credential could not be read.",
+      );
+    case "missing_url":
+      return t(
+        "integrations.config.leafTestMissingUrl",
+        "The Leaf Admin credential is missing the ERP base URL.",
+      );
+    case "missing_token":
+      return t(
+        "integrations.config.leafTestMissingToken",
+        "The Leaf Admin credential is missing the token.",
+      );
+    case "wrong_kind":
+      return t(
+        "integrations.config.leafTestWrongKind",
+        "The credential must be the Leaf Admin type.",
       );
     case "missing":
       return t(
@@ -344,41 +355,6 @@ function leafProbeMessage(t: TFunction, probe: LeafProbeView): string {
       return t(
         "integrations.config.leafTestUnreachable",
         "Could not reach Leaf Admin.",
-      );
-  }
-}
-
-function leafUrlMessage(t: TFunction, problem: LeafSystemUrlProblem): string {
-  switch (problem) {
-    case "empty":
-      return t(
-        "integrations.config.leafSystemUrlEmpty",
-        "Enter the ERP base URL.",
-      );
-    case "slash":
-      return t(
-        "integrations.config.leafSystemUrlSlash",
-        "The URL must not end with a slash.",
-      );
-    case "https":
-      return t(
-        "integrations.config.leafSystemUrlHttps",
-        "The URL must use https.",
-      );
-    case "userinfo":
-      return t(
-        "integrations.config.leafSystemUrlUserinfo",
-        "The URL must not include a username or password.",
-      );
-    case "query":
-      return t(
-        "integrations.config.leafSystemUrlQuery",
-        "The URL must not include a query or a fragment.",
-      );
-    default:
-      return t(
-        "integrations.config.leafSystemUrlInvalid",
-        "The URL is not valid.",
       );
   }
 }
@@ -800,10 +776,12 @@ function refusalViewOf(form: Form) {
 
 // The body, from the form. ONE function, because it is also what a refusal is matched against.
 function currentOf(form: Form) {
+  const config = { ...form.config };
+  if (form.catalogType === "LEAF_ADMIN") delete config.system_url;
   return {
     name: form.name.trim(),
     credentialRef: form.credentialRef || null,
-    config: form.config,
+    config,
     inboundAuthStrategy: form.inboundAuthStrategy,
     inboundSecretRef: form.inboundSecretRef || null,
     enabled: form.enabled,
@@ -916,9 +894,7 @@ export function IntegrationEditModal({
             ...(showsSignature ? SIGNATURE_FIELDS : []),
             ...fetchBackFields(form.config),
           ]
-        : isLeaf
-          ? [...openFields, "config.system_url"]
-          : openFields
+        : openFields
       : [],
   );
   // The workspace's HTTP tools, for a generic webhook's lookup tool; null while loading.
@@ -930,7 +906,6 @@ export function IntegrationEditModal({
   const [probeNote, setProbeNote] = useState<string | null>(null);
   const [loadingForm, setLoadingForm] = useState(false);
   const [loadError, setLoadError] = useState(false);
-  const [urlTried, setUrlTried] = useState(false);
   // Google Calendar: the calendars the connected credential can see (picker source).
   const [availableCals, setAvailableCals] = useState<
     { id: string; summary: string; primary: boolean; accessRole: string }[]
@@ -1038,7 +1013,6 @@ export function IntegrationEditModal({
   useOnModalOpen(modal, () => {
     // The component outlives the dialog, so a mark from the last session is still held here.
     refusal.clear();
-    setUrlTried(false);
     setProbe(null);
     setProbeNote(null);
     setLoadError(false);
@@ -1142,7 +1116,6 @@ export function IntegrationEditModal({
       form.name ===
         catalogLabel(catalog.find((x) => x.catalogType === form.catalogType));
     loadedConfig.current = defaultConfig(c.catalogType);
-    setUrlTried(false);
     setProbe(null);
     setProbeNote(null);
     setForm({
@@ -1210,13 +1183,6 @@ export function IntegrationEditModal({
 
   async function save() {
     if (!form.name.trim() || !form.catalogType) return;
-    if (
-      form.catalogType === "LEAF_ADMIN" &&
-      leafSystemUrlProblem(form.config.system_url)
-    ) {
-      setUrlTried(true);
-      return;
-    }
     // The body this modal writes, minus the create-only `catalogType`. One expression, because it is
     // also what the refusal is matched against.
     const sent = currentOf(form);
@@ -1328,7 +1294,6 @@ export function IntegrationEditModal({
   const compat = credentialCompat.catalog(form.catalogType);
   const needsGoogle = compat[0] === "google_oauth";
   const cfg = form.config;
-  const urlProblem = isLeaf ? leafSystemUrlProblem(cfg.system_url) : null;
   // Functional: the Sheets editor applies a fetched spreadsheet title after an await, and a merge
   // into the render's `form` would put back whatever the operator typed meanwhile.
   const setCfg = (patch: Record<string, unknown>) =>
@@ -1536,45 +1501,18 @@ export function IntegrationEditModal({
                     )}
                   </p>
                 )}
+                {isLeaf && (
+                  <p className="text-text-muted mt-1.5 text-xs">
+                    {t(
+                      "integrations.leafCredentialHint",
+                      "The ERP base URL and the token live on a Leaf Admin credential. Test connection is on that credential, and it stays off a generic one.",
+                    )}
+                  </p>
+                )}
               </FormField>
             )}
 
             {/* ── Per-toolpack configuration ── */}
-            {isLeaf && (
-              <FormField
-                label={t("integrations.config.leafSystemUrl", "ERP base URL")}
-                required
-                description={t(
-                  "integrations.config.leafSystemUrlHint",
-                  "https, with no /api at the end.",
-                )}
-                error={
-                  urlTried && urlProblem
-                    ? leafUrlMessage(t, urlProblem)
-                    : refusal.at(
-                        "config.system_url",
-                        typeof cfg.system_url === "string"
-                          ? cfg.system_url
-                          : "",
-                      )
-                }
-              >
-                <Input
-                  value={
-                    typeof cfg.system_url === "string" ? cfg.system_url : ""
-                  }
-                  onChange={(e) => {
-                    setUrlTried(false);
-                    setCfg({ system_url: e.target.value });
-                  }}
-                  placeholder="https://erp.example.com"
-                  inputMode="url"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </FormField>
-            )}
-
             {isLeaf && (
               <div className="flex flex-col gap-2">
                 <div>
@@ -1591,7 +1529,7 @@ export function IntegrationEditModal({
                   {editId && !isDirty
                     ? t(
                         "integrations.config.leafTestHint",
-                        "Uses the saved URL and token.",
+                        "Uses the URL and token saved on the Leaf Admin credential.",
                       )
                     : t(
                         "integrations.config.leafTestSaveFirst",

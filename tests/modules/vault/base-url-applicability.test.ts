@@ -172,6 +172,7 @@ describe("the catalog is the rule", () => {
       "query",
       "openai_compatible",
       "typesafe",
+      "leaf_admin",
       "chatwoot_api_token",
       "mcp_oauth",
       "langfuse",

@@ -494,7 +494,7 @@ export const integrationsAdminController = new Elysia({
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Test a saved Leaf Admin connection",
-        "Calls the saved Leaf Admin ERP with the saved URL and the generic vault token, from this instance. Returns the HTTP status and statusCode, or a short failure code. Never returns the token or the response body.",
+        "Calls the saved Leaf Admin ERP with the URL and token on the Leaf Admin credential, from this instance. Returns the HTTP status and statusCode, or a short failure code. Never returns the token or the response body.",
       ),
       params: t.Object({
         id: t.String({

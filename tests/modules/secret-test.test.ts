@@ -113,6 +113,24 @@ describe("runSecretTest", () => {
     expect(calls).toHaveLength(0);
   });
 
+  test("probes Leaf Admin on the supplied ERP root with x-auth-header", async () => {
+    const { calls, fetchImpl } = fakeFetch();
+    const r = await runSecretTest(
+      {
+        kind: "leaf_admin",
+        value: "leaf-token",
+        baseURL: "https://erp.example.com",
+      },
+      { fetchImpl, assertSafe: passAssert },
+    );
+    expect(r).toEqual({ testable: true, ok: true });
+    expect(calls[0]?.url).toBe(
+      "https://erp.example.com/api/v2/integrations/contracts?page=1&limit=1",
+    );
+    expect(calls[0]?.headers["x-auth-header"]).toBe("leaf-token");
+    expect(calls[0]?.url).not.toContain("leaf-token");
+  });
+
   test("probes the chatwoot profile endpoint on the supplied base", async () => {
     const { calls, fetchImpl } = fakeFetch();
     const r = await runSecretTest(

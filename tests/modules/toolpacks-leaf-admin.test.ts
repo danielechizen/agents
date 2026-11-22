@@ -18,6 +18,7 @@ import type {
   IntegrationSelection,
   ToolpackCtx,
 } from "@/modules/integrations/toolpacks/types";
+import { assertVaultEntryCreatable } from "@/modules/vault/service";
 
 const SECRET = "LEAF_SECRET_KEY_DO_NOT_LEAK";
 const BASE = "https://leaf.example.com";
@@ -92,6 +93,11 @@ function ctx(over: Partial<ToolpackCtx> = {}): ToolpackCtx {
     threadId: "1:1:9",
     contactDbId: 7n,
     resolveCredential: async () => SECRET,
+    resolveCredentialEntry: async () => ({
+      value: SECRET,
+      kind: "leaf_admin",
+      baseUrl: BASE,
+    }),
     assertSafe: async () => undefined,
     ...over,
   };
@@ -573,11 +579,14 @@ describe("leaf admin toolpack — writes and failures", () => {
 
   test("http and a refused host never send the key", async () => {
     const http = mockFetch(() => ({ json: { statusCode: 1, results: [] } }));
-    const httpOut = (await tool(
-      "leaf_lookup_customer",
-      { fetchImpl: http.impl },
-      { system_url: "http://leaf.example.com" },
-    ).invoke({})) as string;
+    const httpOut = (await tool("leaf_lookup_customer", {
+      fetchImpl: http.impl,
+      resolveCredentialEntry: async () => ({
+        value: SECRET,
+        kind: "leaf_admin",
+        baseUrl: "http://leaf.example.com",
+      }),
+    }).invoke({})) as string;
     expect(http.calls).toHaveLength(0);
     expect(httpOut).toContain("https");
     expect(httpOut).not.toContain(SECRET);
@@ -607,7 +616,7 @@ describe("leaf admin toolpack — writes and failures", () => {
     const { impl, calls } = mockFetch(() => ({ json: { statusCode: 1 } }));
     const out = (await tool("leaf_lookup_customer", {
       fetchImpl: impl,
-      resolveCredential: async () => {
+      resolveCredentialEntry: async () => {
         throw new Error(`vault ${SECRET}`);
       },
     }).invoke({})) as string;
@@ -628,40 +637,106 @@ describe("leaf admin toolpack — writes and failures", () => {
 
   test("trailing slash on system_url is stripped before /api/v2", async () => {
     const { impl, calls } = mockFetch(() => ({ json: contractsPayload([]) }));
-    await tool(
-      "leaf_lookup_customer",
-      { fetchImpl: impl },
-      { system_url: "https://leaf.example.com/" },
-    ).invoke({});
+    await tool("leaf_lookup_customer", {
+      fetchImpl: impl,
+      resolveCredentialEntry: async () => ({
+        value: SECRET,
+        kind: "leaf_admin",
+        baseUrl: "https://leaf.example.com/",
+      }),
+    }).invoke({});
     expect(calls[0]?.url.startsWith("https://leaf.example.com/api/v2/")).toBe(
       true,
     );
   });
 });
 
-describe("the Leaf Admin base URL is required before it is stored", () => {
-  test("a generic credential is the token this integration reads", () => {
-    expect(credentialCompat.catalog("LEAF_ADMIN")).toEqual(["generic"]);
+describe("the Leaf Admin credential carries the URL and the token", () => {
+  test("the integration prefers the Leaf Admin secret type, not generic", () => {
+    expect(credentialCompat.catalog("LEAF_ADMIN")).toEqual(["leaf_admin"]);
   });
 
-  test("an empty URL, http and a trailing slash are refused", () => {
+  test("an empty URL, http, a slash and /api are refused on the credential", () => {
     expect(leafSystemUrlProblem("")).toBe("empty");
     expect(leafSystemUrlProblem("http://leaf.example.com")).toBe("https");
     expect(leafSystemUrlProblem("https://leaf.example.com/")).toBe("slash");
+    expect(leafSystemUrlProblem("https://leaf.example.com/api")).toBe("api");
+    expect(leafSystemUrlProblem("https://leaf.example.com/api/v2")).toBe("api");
     expect(leafSystemUrlProblem("https://leaf.example.com")).toBeNull();
     expect(() =>
-      assertIntegrationWritable("LEAF_ADMIN", { config: { system_url: "" } }),
-    ).toThrow("config.system_url is required");
+      assertIntegrationWritable("LEAF_ADMIN", { config: {} }),
+    ).not.toThrow();
     expect(() =>
       assertIntegrationWritable("LEAF_ADMIN", {
         config: { system_url: "https://leaf.example.com/" },
       }),
     ).toThrow("must not end with a slash");
-    expect(() =>
-      assertIntegrationWritable("LEAF_ADMIN", {
-        config: { system_url: "https://leaf.example.com" },
+  });
+
+  test("a missing URL and a missing token name the field in Portuguese", async () => {
+    const noUrl = (await tool("leaf_lookup_customer", {
+      resolveCredentialEntry: async () => ({
+        value: SECRET,
+        kind: "leaf_admin",
+        baseUrl: null,
       }),
-    ).not.toThrow();
+    }).invoke({})) as string;
+    expect(noUrl).toContain("URL base do ERP");
+    expect(noUrl).not.toContain(SECRET);
+
+    const noToken = (await tool("leaf_lookup_customer", {
+      resolveCredentialEntry: async () => ({
+        value: "",
+        kind: "leaf_admin",
+        baseUrl: BASE,
+      }),
+    }).invoke({})) as string;
+    expect(noToken).toContain("token");
+    expect(noToken).not.toContain("URL base do ERP");
+
+    const generic = (await tool("leaf_lookup_customer", {
+      resolveCredentialEntry: async () => ({
+        value: SECRET,
+        kind: "generic",
+        baseUrl: BASE,
+      }),
+    }).invoke({})) as string;
+    expect(generic).toContain("tipo Leaf Admin");
+    expect(generic).not.toContain(SECRET);
+  });
+
+  test("the credential write refuses http and a URL that already ends in /api", () => {
+    expect(
+      assertVaultEntryCreatable({
+        name: "Leaf",
+        kind: "leaf_admin",
+        value: "tok",
+        baseUrl: "https://erp.example.com",
+      }).baseUrl,
+    ).toBe("https://erp.example.com");
+    expect(() =>
+      assertVaultEntryCreatable({
+        name: "Leaf",
+        kind: "leaf_admin",
+        value: "tok",
+        baseUrl: "http://erp.example.com",
+      }),
+    ).toThrow("must use https");
+    expect(() =>
+      assertVaultEntryCreatable({
+        name: "Leaf",
+        kind: "leaf_admin",
+        value: "tok",
+        baseUrl: "https://erp.example.com/api",
+      }),
+    ).toThrow("must not end with /api");
+    expect(() =>
+      assertVaultEntryCreatable({
+        name: "Leaf",
+        kind: "leaf_admin",
+        value: "tok",
+      }),
+    ).toThrow("baseUrl is required");
   });
 });
 
@@ -753,10 +828,16 @@ describe("the connection test calls the saved Leaf Admin", () => {
       userId: null,
       role: "TENANT_ADMIN" as const,
     };
+    const entry = async () => ({
+      value: SECRET,
+      kind: "leaf_admin" as const,
+      baseUrl: BASE,
+      paramName: null,
+    });
     const result = await testLeafConnection(ctx, 4n, base, {
       fetchImpl: impl,
       assertSafe: async () => new URL(BASE),
-      resolveCredential: async () => SECRET,
+      resolveCredentialEntry: entry,
       now,
     });
     expect(result).toEqual({ ok: true, httpStatus: 200, statusCode: "ok" });
@@ -765,7 +846,7 @@ describe("the connection test calls the saved Leaf Admin", () => {
       await testLeafConnection(ctx, 4n, base, {
         fetchImpl: impl,
         assertSafe: async () => new URL(BASE),
-        resolveCredential: async () => SECRET,
+        resolveCredentialEntry: entry,
         now,
       });
     }
@@ -773,7 +854,7 @@ describe("the connection test calls the saved Leaf Admin", () => {
       testLeafConnection(ctx, 4n, base, {
         fetchImpl: impl,
         assertSafe: async () => new URL(BASE),
-        resolveCredential: async () => SECRET,
+        resolveCredentialEntry: entry,
         now,
       }),
     ).rejects.toThrow("at most 10 connection tests a minute");
