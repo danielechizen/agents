@@ -6,9 +6,9 @@ A verificação TLS fica ligada. O adaptador do Leaf Agent manda `verify: false`
 
 ## URL e cabeçalho
 
-`config.system_url` é a raiz https do sistema. Barras no fim são removidas e o cliente chama `{system_url}/api/v2`. Não inclua `/api/v2` na URL configurada. `http`, usuário e senha na URL, query e fragmento são recusados antes de qualquer chamada.
+O token fica na credencial genérica do cofre e a URL no campo da integração. `config.system_url` é a raiz https do sistema, sem barra no final e sem `/api`. O cliente chama `{system_url}/api/v2`. `http`, usuário e senha na URL, query e fragmento são recusados antes de gravar. Uma barra que já esteja gravada é removida na chamada.
 
-Cada request manda `x-auth-header: <api_key>`. A chave é o segredo do cofre apontado por `credentialRef` (texto puro). Ela não entra no log, na mensagem devolvida ao modelo nem no corpo que o modelo vê.
+Cada request manda `x-auth-header: <api_key>`. A chave é o texto puro da credencial genérica apontada por `credentialRef`. Ela não entra no log, na mensagem devolvida ao modelo nem no corpo que o modelo vê.
 
 Sucesso é HTTP 2xx **e** `statusCode` `1` ou `"ok"` (sem distinguir maiúsculas; `"1"` também vale).
 
@@ -18,14 +18,9 @@ O request não segue redirect, estoura em 15 s e lê no máximo um prefixo do co
 
 ## Cadastro
 
-1. No cofre, crie um segredo genérico cujo valor é a `api_key` (texto puro, não um JSON).
-2. Em Integrações, crie uma instância **Leaf Admin** e escolha essa credencial. O tipo aparece porque está no catálogo; o rótulo vem do catálogo.
+1. No cofre, crie um segredo genérico cujo valor é a `api_key` (texto puro, não um JSON). Não há um tipo de credencial só do Leaf: o token é essa credencial genérica.
+2. Em Recursos → Integrações, crie ou abra a instância **Leaf Admin**. Escolha essa credencial e preencha **URL base do ERP** (`https`, sem barra no final e sem `/api`). **Testar comunicação** chama o Leaf com a URL e o token já salvos, nesta instância, e mostra sucesso ou o erro sem devolver o token.
 3. O webhook exige autenticação (`NONE` é recusado na gravação). Na mesma tela, estratégia **cabeçalho estático** e um segredo do cofre em `inboundSecretRef`. O nome padrão do cabeçalho é `x-webhook-token`. `config.authHeader` troca o nome.
-4. `system_url` é a chave `system_url` da config da instância. O formulário desta edição não desenha um campo só para ela (a mudança fica aditiva para o rebase). Grave com `PATCH /api/v1/integrations/instances/:id` ou com a ferramenta MCP `integration_update`:
-
-   `{ "config": { "system_url": "https://sistema.exemplo.com" } }`
-
-   Um salvamento posterior na tela reenvia a config que carregou, então a chave permanece.
 
 ## Identidade
 

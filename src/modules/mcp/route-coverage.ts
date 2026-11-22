@@ -204,6 +204,9 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /v1/integrations/instances/:id/test-reception": {
     gap: "test an inbound notification against a saved integration, stage by stage",
   },
+  "POST /v1/integrations/instances/:id/test-connection": {
+    none: "a live call from the console to the saved ERP; the token stays on the server and the answer is for that screen",
+  },
   "DELETE /v1/integrations/instances/:id": { tool: "integration_delete" },
   "POST /v1/integrations/inbound/:routeToken": { none: INBOUND },
   "GET /v1/knowledge/bases": { tool: "knowledge_list" },

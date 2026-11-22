@@ -1,10 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import { credentialCompat } from "@/client/lib/credentialCompat";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { getCatalogEntry } from "@/modules/integrations/catalog";
 import { leafInvoiceExternalId } from "@/modules/integrations/leaf-admin-mapper";
+import { leafSystemUrlProblem } from "@/modules/integrations/leaf-system-url";
 import { getMapper } from "@/modules/integrations/mappers";
-import { leafAdminToolpack } from "@/modules/integrations/toolpacks/leaf-admin";
+import {
+  assertIntegrationWritable,
+  testLeafConnection,
+} from "@/modules/integrations/service";
+import {
+  leafAdminToolpack,
+  probeLeafAdmin,
+} from "@/modules/integrations/toolpacks/leaf-admin";
 import type {
   IntegrationSelection,
   ToolpackCtx,
@@ -627,5 +636,147 @@ describe("leaf admin toolpack — writes and failures", () => {
     expect(calls[0]?.url.startsWith("https://leaf.example.com/api/v2/")).toBe(
       true,
     );
+  });
+});
+
+describe("the Leaf Admin base URL is required before it is stored", () => {
+  test("a generic credential is the token this integration reads", () => {
+    expect(credentialCompat.catalog("LEAF_ADMIN")).toEqual(["generic"]);
+  });
+
+  test("an empty URL, http and a trailing slash are refused", () => {
+    expect(leafSystemUrlProblem("")).toBe("empty");
+    expect(leafSystemUrlProblem("http://leaf.example.com")).toBe("https");
+    expect(leafSystemUrlProblem("https://leaf.example.com/")).toBe("slash");
+    expect(leafSystemUrlProblem("https://leaf.example.com")).toBeNull();
+    expect(() =>
+      assertIntegrationWritable("LEAF_ADMIN", { config: { system_url: "" } }),
+    ).toThrow("config.system_url is required");
+    expect(() =>
+      assertIntegrationWritable("LEAF_ADMIN", {
+        config: { system_url: "https://leaf.example.com/" },
+      }),
+    ).toThrow("must not end with a slash");
+    expect(() =>
+      assertIntegrationWritable("LEAF_ADMIN", {
+        config: { system_url: "https://leaf.example.com" },
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe("the connection test calls the saved Leaf Admin", () => {
+  const saved = { system_url: BASE };
+
+  test("a small contract page is enough, and the token stays out of the answer", async () => {
+    const { impl, calls } = mockFetch(() => ({
+      json: {
+        statusCode: 1,
+        results: [{ document: DOCUMENT, phone: PHONE, pppoePassword: SECRET }],
+      },
+    }));
+    const result = await probeLeafAdmin(saved, SECRET, {
+      fetchImpl: impl,
+      assertSafe: async () => new URL(BASE),
+    });
+    expect(calls[0]?.url).toBe(
+      `${BASE}/api/v2/integrations/contracts?page=1&limit=1`,
+    );
+    expect(header(calls[0]?.init ?? {}, "x-auth-header")).toBe(SECRET);
+    expect(result).toEqual({ ok: true, httpStatus: 200, statusCode: "1" });
+    expect(JSON.stringify(result)).not.toContain(SECRET);
+    expect(JSON.stringify(result)).not.toContain(DOCUMENT);
+    expect(JSON.stringify(result)).not.toContain("pppoePassword");
+  });
+
+  test("a rejected credential and a business answer stay codes, not the body", async () => {
+    const rejected = mockFetch(() => ({
+      status: 401,
+      json: { statusCode: 0, detailCode: 19, message: SECRET },
+    }));
+    const answer = await probeLeafAdmin(saved, SECRET, {
+      fetchImpl: rejected.impl,
+      assertSafe: async () => new URL(BASE),
+    });
+    expect(answer).toEqual({
+      ok: false,
+      code: "rejected",
+      httpStatus: 401,
+      statusCode: "0",
+    });
+    expect(JSON.stringify(answer)).not.toContain(SECRET);
+
+    const business = mockFetch(() => ({
+      json: { statusCode: "fail", message: `customer ${DOCUMENT}` },
+    }));
+    const second = await probeLeafAdmin(saved, SECRET, {
+      fetchImpl: business.impl,
+      assertSafe: async () => new URL(BASE),
+    });
+    expect(second).toEqual({
+      ok: false,
+      code: "answered",
+      httpStatus: 200,
+      statusCode: "fail",
+    });
+    expect(JSON.stringify(second)).not.toContain(DOCUMENT);
+  });
+
+  test("an empty URL does not call Leaf", async () => {
+    const { impl, calls } = mockFetch(() => ({ json: {} }));
+    const result = await probeLeafAdmin({ system_url: "" }, SECRET, {
+      fetchImpl: impl,
+      assertSafe: async () => new URL(BASE),
+    });
+    expect(result).toEqual({ ok: false, code: "missing" });
+    expect(calls).toHaveLength(0);
+  });
+
+  test("the saved generic credential is the header, and the eleventh call waits", async () => {
+    const row = {
+      catalogType: "LEAF_ADMIN",
+      config: saved,
+      credentialRef: "vault:leaf",
+    };
+    const tx = {
+      $executeRaw: async () => 1,
+      integrationInstance: { findUnique: async () => row },
+    };
+    const base = {
+      $extends: () => base,
+      $transaction: (fn: (db: typeof tx) => Promise<unknown>) => fn(tx),
+    } as unknown as PrismaClient;
+    const { impl, calls } = mockFetch(() => ({ json: { statusCode: "ok" } }));
+    const now = Date.UTC(2026, 0, 1);
+    const ctx = {
+      tenantId: 880011n,
+      userId: null,
+      role: "TENANT_ADMIN" as const,
+    };
+    const result = await testLeafConnection(ctx, 4n, base, {
+      fetchImpl: impl,
+      assertSafe: async () => new URL(BASE),
+      resolveCredential: async () => SECRET,
+      now,
+    });
+    expect(result).toEqual({ ok: true, httpStatus: 200, statusCode: "ok" });
+    expect(header(calls[0]?.init ?? {}, "x-auth-header")).toBe(SECRET);
+    for (let i = 0; i < 9; i++) {
+      await testLeafConnection(ctx, 4n, base, {
+        fetchImpl: impl,
+        assertSafe: async () => new URL(BASE),
+        resolveCredential: async () => SECRET,
+        now,
+      });
+    }
+    await expect(
+      testLeafConnection(ctx, 4n, base, {
+        fetchImpl: impl,
+        assertSafe: async () => new URL(BASE),
+        resolveCredential: async () => SECRET,
+        now,
+      }),
+    ).rejects.toThrow("at most 10 connection tests a minute");
+    expect(calls).toHaveLength(10);
   });
 });

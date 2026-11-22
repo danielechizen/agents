@@ -45,11 +45,16 @@ import {
   toolpackToolMeta,
   withToolpackArgNotes,
 } from "@/client/lib/toolpackTools";
+import { cn } from "@/client/lib/utils";
 import { inRange, intRange } from "@/lib/number-range";
 import {
   CALENDAR_CONFIG_RANGES,
   REMINDER_OFFSET_RANGE,
 } from "@/modules/integrations/calendar-config-ranges";
+import {
+  type LeafSystemUrlProblem,
+  leafSystemUrlProblem,
+} from "@/modules/integrations/leaf-system-url";
 import {
   FetchBackFields,
   type FetchBackTool,
@@ -268,8 +273,113 @@ function defaultConfig(catalogType: string): Record<string, unknown> {
       };
     case "RESEND":
       return { from: "", replyTo: "" };
+    case "LEAF_ADMIN":
+      return { system_url: "", notifyOnPayment: true };
     default:
       return {};
+  }
+}
+
+type LeafProbeView =
+  | { ok: true; httpStatus: number; statusCode: string }
+  | {
+      ok: false;
+      code: string;
+      httpStatus?: number;
+      statusCode?: string;
+    };
+
+function leafProbeMessage(t: TFunction, probe: LeafProbeView): string {
+  if (probe.ok) {
+    return t(
+      "integrations.config.leafTestOk",
+      "Connection OK (HTTP {{status}}, statusCode {{statusCode}}).",
+      { status: probe.httpStatus, statusCode: probe.statusCode },
+    );
+  }
+  const status = probe.httpStatus ?? 0;
+  switch (probe.code) {
+    case "rejected":
+      return t(
+        "integrations.config.leafTestRejected",
+        "Leaf Admin rejected the credential (HTTP {{status}}).",
+        { status },
+      );
+    case "answered":
+      return probe.statusCode
+        ? t(
+            "integrations.config.leafTestAnswered",
+            "Leaf Admin answered but did not accept the call (HTTP {{status}}, statusCode {{statusCode}}).",
+            { status, statusCode: probe.statusCode },
+          )
+        : t(
+            "integrations.config.leafTestHttp",
+            "Leaf Admin answered with an error (HTTP {{status}}).",
+            { status },
+          );
+    case "http":
+      return t(
+        "integrations.config.leafTestHttp",
+        "Leaf Admin answered with an error (HTTP {{status}}).",
+        { status },
+      );
+    case "timeout":
+      return t("integrations.config.leafTestTimeout", "The test timed out.");
+    case "blocked":
+      return t(
+        "integrations.config.leafTestBlocked",
+        "The saved URL was refused.",
+      );
+    case "unread":
+      return t(
+        "integrations.config.leafTestUnread",
+        "The saved credential could not be read.",
+      );
+    case "missing":
+      return t(
+        "integrations.config.leafTestMissing",
+        "Save the URL and the credential first.",
+      );
+    default:
+      return t(
+        "integrations.config.leafTestUnreachable",
+        "Could not reach Leaf Admin.",
+      );
+  }
+}
+
+function leafUrlMessage(t: TFunction, problem: LeafSystemUrlProblem): string {
+  switch (problem) {
+    case "empty":
+      return t(
+        "integrations.config.leafSystemUrlEmpty",
+        "Enter the ERP base URL.",
+      );
+    case "slash":
+      return t(
+        "integrations.config.leafSystemUrlSlash",
+        "The URL must not end with a slash.",
+      );
+    case "https":
+      return t(
+        "integrations.config.leafSystemUrlHttps",
+        "The URL must use https.",
+      );
+    case "userinfo":
+      return t(
+        "integrations.config.leafSystemUrlUserinfo",
+        "The URL must not include a username or password.",
+      );
+    case "query":
+      return t(
+        "integrations.config.leafSystemUrlQuery",
+        "The URL must not include a query or a fragment.",
+      );
+    default:
+      return t(
+        "integrations.config.leafSystemUrlInvalid",
+        "The URL is not valid.",
+      );
   }
 }
 
@@ -806,15 +916,21 @@ export function IntegrationEditModal({
             ...(showsSignature ? SIGNATURE_FIELDS : []),
             ...fetchBackFields(form.config),
           ]
-        : openFields
+        : isLeaf
+          ? [...openFields, "config.system_url"]
+          : openFields
       : [],
   );
   // The workspace's HTTP tools, for a generic webhook's lookup tool; null while loading.
   const [httpTools, setHttpTools] = useState<FetchBackTool[] | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [probing, setProbing] = useState(false);
+  const [probe, setProbe] = useState<LeafProbeView | null>(null);
+  const [probeNote, setProbeNote] = useState<string | null>(null);
   const [loadingForm, setLoadingForm] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  const [urlTried, setUrlTried] = useState(false);
   // Google Calendar: the calendars the connected credential can see (picker source).
   const [availableCals, setAvailableCals] = useState<
     { id: string; summary: string; primary: boolean; accessRole: string }[]
@@ -922,6 +1038,9 @@ export function IntegrationEditModal({
   useOnModalOpen(modal, () => {
     // The component outlives the dialog, so a mark from the last session is still held here.
     refusal.clear();
+    setUrlTried(false);
+    setProbe(null);
+    setProbeNote(null);
     setLoadError(false);
     setAvailableCals([]);
     setCalError(false);
@@ -1023,6 +1142,9 @@ export function IntegrationEditModal({
       form.name ===
         catalogLabel(catalog.find((x) => x.catalogType === form.catalogType));
     loadedConfig.current = defaultConfig(c.catalogType);
+    setUrlTried(false);
+    setProbe(null);
+    setProbeNote(null);
     setForm({
       ...form,
       catalogType: c.catalogType,
@@ -1040,8 +1162,61 @@ export function IntegrationEditModal({
     syncSlotModes(defaultConfig(c.catalogType));
   }
 
+  async function testSavedLeaf() {
+    if (!editId || probing) return;
+    setProbing(true);
+    setProbe(null);
+    setProbeNote(null);
+    try {
+      const { data, error } = await api.api.v1.integrations
+        .instances({ id: editId })
+        ["test-connection"].post();
+      if (error || !data) {
+        setProbeNote(
+          apiErrorMessage(error) ||
+            t(
+              "integrations.config.leafTestUnreachable",
+              "Could not reach Leaf Admin.",
+            ),
+        );
+        return;
+      }
+      if (data.ok) {
+        setProbe({
+          ok: true,
+          httpStatus: data.httpStatus,
+          statusCode: data.statusCode,
+        });
+      } else {
+        setProbe({
+          ok: false,
+          code: data.code,
+          httpStatus: "httpStatus" in data ? data.httpStatus : undefined,
+          statusCode: "statusCode" in data ? data.statusCode : undefined,
+        });
+      }
+    } catch (e) {
+      setProbeNote(
+        apiErrorMessage(e) ||
+          t(
+            "integrations.config.leafTestUnreachable",
+            "Could not reach Leaf Admin.",
+          ),
+      );
+    } finally {
+      setProbing(false);
+    }
+  }
+
   async function save() {
     if (!form.name.trim() || !form.catalogType) return;
+    if (
+      form.catalogType === "LEAF_ADMIN" &&
+      leafSystemUrlProblem(form.config.system_url)
+    ) {
+      setUrlTried(true);
+      return;
+    }
     // The body this modal writes, minus the create-only `catalogType`. One expression, because it is
     // also what the refusal is matched against.
     const sent = currentOf(form);
@@ -1153,6 +1328,7 @@ export function IntegrationEditModal({
   const compat = credentialCompat.catalog(form.catalogType);
   const needsGoogle = compat[0] === "google_oauth";
   const cfg = form.config;
+  const urlProblem = isLeaf ? leafSystemUrlProblem(cfg.system_url) : null;
   // Functional: the Sheets editor applies a fetched spreadsheet title after an await, and a merge
   // into the render's `form` would put back whatever the operator typed meanwhile.
   const setCfg = (patch: Record<string, unknown>) =>
@@ -1240,7 +1416,7 @@ export function IntegrationEditModal({
         modal={modal}
         size="lg"
         unsavedChanges={isDirty}
-        busy={saving || testing}
+        busy={saving || testing || probing}
         title={
           editId
             ? t("integrations.editTitle", "Edit integration")
@@ -1248,12 +1424,13 @@ export function IntegrationEditModal({
         }
         footer={
           <div className="flex justify-end gap-2">
-            <ModalCancelButton disabled={saving || testing} />
+            <ModalCancelButton disabled={saving || testing || probing} />
             <Button
               onClick={save}
               loading={saving}
               disabled={
                 testing ||
+                probing ||
                 loadingForm ||
                 loadError ||
                 !form.name.trim() ||
@@ -1363,6 +1540,82 @@ export function IntegrationEditModal({
             )}
 
             {/* ── Per-toolpack configuration ── */}
+            {isLeaf && (
+              <FormField
+                label={t("integrations.config.leafSystemUrl", "ERP base URL")}
+                required
+                description={t(
+                  "integrations.config.leafSystemUrlHint",
+                  "https, with no /api at the end.",
+                )}
+                error={
+                  urlTried && urlProblem
+                    ? leafUrlMessage(t, urlProblem)
+                    : refusal.at(
+                        "config.system_url",
+                        typeof cfg.system_url === "string"
+                          ? cfg.system_url
+                          : "",
+                      )
+                }
+              >
+                <Input
+                  value={
+                    typeof cfg.system_url === "string" ? cfg.system_url : ""
+                  }
+                  onChange={(e) => {
+                    setUrlTried(false);
+                    setCfg({ system_url: e.target.value });
+                  }}
+                  placeholder="https://erp.example.com"
+                  inputMode="url"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </FormField>
+            )}
+
+            {isLeaf && (
+              <div className="flex flex-col gap-2">
+                <div>
+                  <Button
+                    variant="secondary"
+                    loading={probing}
+                    disabled={!editId || isDirty || saving}
+                    onClick={() => void testSavedLeaf()}
+                  >
+                    {t("integrations.config.leafTest", "Test connection")}
+                  </Button>
+                </div>
+                <p className="text-text-muted text-xs">
+                  {editId && !isDirty
+                    ? t(
+                        "integrations.config.leafTestHint",
+                        "Uses the saved URL and token.",
+                      )
+                    : t(
+                        "integrations.config.leafTestSaveFirst",
+                        "Save the integration to test.",
+                      )}
+                </p>
+                {probeNote ? (
+                  <p className="text-error text-sm" role="status">
+                    {probeNote}
+                  </p>
+                ) : probe ? (
+                  <p
+                    className={cn(
+                      "text-sm",
+                      probe.ok ? "text-success" : "text-error",
+                    )}
+                    role="status"
+                  >
+                    {leafProbeMessage(t, probe)}
+                  </p>
+                ) : null}
+              </div>
+            )}
+
             {form.catalogType === "ASAAS" && (
               <FormField
                 label={t("integrations.config.environment", "Environment")}

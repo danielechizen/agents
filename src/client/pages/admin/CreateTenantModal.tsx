@@ -9,6 +9,7 @@ import {
 } from "@/client/components/Modal";
 import { notifyTenantsChanged } from "@/client/lib/activeTenant";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { clipText } from "@/lib/text";
 
 function slugify(name: string): string {
@@ -46,13 +47,16 @@ export function CreateTenantModal({
     setBusy(false);
   });
 
+  function refuseEmpty(nextName: string, nextSlug: string): boolean {
+    if (nextName && nextSlug) return false;
+    setError(t("tenant.required", "Name and slug are required."));
+    return true;
+  }
+
   async function submit() {
     const nextName = name.trim();
     const nextSlug = (slugTouched ? slug : slugify(name)).trim();
-    if (!nextName || !nextSlug) {
-      setError(t("tenant.required", "Name and slug are required."));
-      return;
-    }
+    if (refuseEmpty(nextName, nextSlug)) return;
     setBusy(true);
     setError(null);
     const { error: failed } = await api.api.v1.tenants.post({
@@ -64,7 +68,8 @@ export function CreateTenantModal({
       setError(
         failed.status === 409
           ? t("tenant.slugInUse", "This slug is already in use.")
-          : t("tenant.createFailed", "Could not create the tenant."),
+          : apiErrorMessage(failed) ||
+              t("tenant.createFailed", "Could not create the tenant."),
       );
       return;
     }

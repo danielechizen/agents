@@ -7,11 +7,12 @@ import {
   type ToolFailure,
   toolFailure,
 } from "@/graph/tools/failure";
-import { fetchBounded } from "@/lib/outbound";
+import { fetchBounded, OutboundTimeoutError } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { leafInvoiceExternalId } from "../leaf-admin-mapper";
+import { leafApiBase, leafSystemUrlProblem } from "../leaf-system-url";
 import {
   type IntegrationSelection,
   registerToolpack,
@@ -121,27 +122,23 @@ function resolveBase(
       refusal: "Leaf Admin system_url is not configured on this integration.",
     };
   }
-  const stripped = raw.replace(/\/+$/, "");
-  let url: URL;
-  try {
-    url = new URL(stripped);
-  } catch {
-    return { refusal: "Leaf Admin system_url is not a valid URL." };
-  }
-  if (url.protocol !== "https:") {
+  const base = leafApiBase(raw);
+  if (base) return { base };
+  const problem = leafSystemUrlProblem(raw.replace(/\/+$/, ""));
+  if (problem === "https") {
     return { refusal: "Leaf Admin system_url must use https." };
   }
-  if (url.username || url.password) {
+  if (problem === "userinfo") {
     return {
       refusal: "Leaf Admin system_url must not include a username or password.",
     };
   }
-  if (url.search || url.hash) {
+  if (problem === "query") {
     return {
       refusal: "Leaf Admin system_url must not include a query or fragment.",
     };
   }
-  return { base: `${stripped}/api/v2` };
+  return { refusal: "Leaf Admin system_url is not a valid URL." };
 }
 
 type LeafNo = { ok: false; failure: ToolFailure };
@@ -304,6 +301,116 @@ async function leafRequest(
       `Leaf Admin rejected the request (HTTP ${status}).`,
     ),
   };
+}
+
+export type LeafProbe =
+  | { ok: true; httpStatus: number; statusCode: string }
+  | {
+      ok: false;
+      code:
+        | "missing"
+        | "blocked"
+        | "rejected"
+        | "answered"
+        | "http"
+        | "timeout"
+        | "unreachable";
+      httpStatus?: number;
+      statusCode?: string;
+    };
+
+function probeCode(value: unknown, token: string): string | undefined {
+  const raw =
+    typeof value === "number" && Number.isFinite(value)
+      ? String(value)
+      : typeof value === "string"
+        ? value.trim()
+        : "";
+  if (!raw || raw.length > 32 || raw.includes(token)) return undefined;
+  return raw;
+}
+
+// One cheap read of the saved ERP, for the button on the integration. The answer
+// keeps the HTTP status and statusCode. The body, the token and any customer field stay here.
+export async function probeLeafAdmin(
+  config: Record<string, unknown>,
+  token: string | null,
+  deps: {
+    fetchImpl?: typeof fetch;
+    assertSafe?: (url: string) => Promise<URL>;
+    beforeFetch?: () => void;
+  } = {},
+): Promise<LeafProbe> {
+  const base = resolveBase(config);
+  if ("refusal" in base) {
+    return {
+      ok: false,
+      code: base.refusal.includes("not configured") ? "missing" : "blocked",
+    };
+  }
+  if (!token) return { ok: false, code: "missing" };
+  const url = leafUrl(base.base, "/integrations/contracts", {
+    page: 1,
+    limit: 1,
+  });
+  const assertSafe = deps.assertSafe ?? assertSafeOutboundUrl;
+  try {
+    await assertSafe(url);
+  } catch {
+    return { ok: false, code: "blocked" };
+  }
+  deps.beforeFetch?.();
+  const doFetch = deps.fetchImpl ?? fetch;
+  try {
+    const { res, body } = await fetchBounded(
+      url,
+      {
+        method: "GET",
+        headers: {
+          "x-auth-header": token,
+          Accept: "application/json",
+          "User-Agent": "agents",
+        },
+        redirect: "error",
+      },
+      { timeoutMs: TIMEOUT_MS, cap: 16_000, fetchImpl: doFetch },
+    );
+    if (body.chars > 16_000) {
+      return { ok: false, code: "http", httpStatus: res.status };
+    }
+    let json: unknown = null;
+    try {
+      json = JSON.parse(body.text);
+    } catch {
+      json = null;
+    }
+    const record = asRecord(json);
+    const statusCode = probeCode(record?.statusCode, token);
+    const httpStatus = res.status;
+    if (
+      httpStatus === 401 ||
+      httpStatus === 403 ||
+      invalidDetail(record?.detailCode)
+    ) {
+      return { ok: false, code: "rejected", httpStatus, statusCode };
+    }
+    if (
+      httpStatus >= 200 &&
+      httpStatus < 300 &&
+      successStatus(record?.statusCode)
+    ) {
+      return { ok: true, httpStatus, statusCode: statusCode ?? "1" };
+    }
+    if (httpStatus >= 200 && httpStatus < 300) {
+      return { ok: false, code: "answered", httpStatus, statusCode };
+    }
+    return { ok: false, code: "http", httpStatus, statusCode };
+  } catch (err) {
+    if (err instanceof OutboundTimeoutError) {
+      return { ok: false, code: "timeout" };
+    }
+    return { ok: false, code: "unreachable" };
+  }
 }
 
 function documentOf(attrs: unknown): string | null {
