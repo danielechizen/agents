@@ -2,13 +2,15 @@
 
 Toolpack de saída para o sistema Leaf Admin do provedor, mais o webhook `INVOICE_PAID`. O modelo não escolhe a URL, o token, o telefone nem um id que esta conversa não tenha encontrado.
 
-A verificação TLS fica ligada. O adaptador do Leaf Agent manda `verify: false`; este cliente não desliga a verificação e não instala um agente TLS próprio.
+A primeira tentativa verifica o certificado. Só `CERT_HAS_EXPIRED` (certificado vencido) tenta de novo, sem verificar, para a requisição HTTP sair. Qualquer outro erro de TLS continua falha.
 
 ## URL e cabeçalho
 
 A URL e o token ficam na credencial do tipo `leaf_admin`, não numa credencial genérica. O campo **URL base do ERP** é a raiz https do sistema, sem barra no final e sem `/api`. O cliente chama `{url}/api/v2`. `http`, usuário e senha na URL, query, fragmento e um caminho que já termina em `/api` são recusados antes de gravar. Uma barra que já esteja gravada é removida na chamada.
 
 Cada request manda `x-auth-header` com o texto puro do token dessa credencial. A credencial genérica não tem teste de conexão e a ferramenta não a lê. Sem a URL, ou sem o token, a ferramenta diz em português qual dos dois falta. O token não entra no log, na mensagem devolvida ao modelo nem no corpo que o modelo vê.
+
+**Testar conexão**, no formulário ou na lista da credencial Leaf Admin, faz `GET {url}/api/v2/integrations/contracts?page=1&limit=1`. HTTP 2xx com `statusCode` de erro do Leaf não é “conexão ok”: `FORBIDDEN` e `BAD_TOKEN` aparecem como credencial recusada. A linha `leaf-admin: credential test` sai no stdout do processo (em desenvolvimento, também em `logs/log`): método, URL final com `/api/v2`, status HTTP e um trecho curto do corpo de erro, sem o token. A página Logs do console não mostra essa linha.
 
 Sucesso é HTTP 2xx **e** `statusCode` `1` ou `"ok"` (sem distinguir maiúsculas; `"1"` também vale).
 
@@ -19,7 +21,7 @@ O request não segue redirect, estoura em 15 s e lê no máximo um prefixo do co
 ## Cadastro
 
 1. No cofre, ou ao criar a credencial a partir da integração, escolha o tipo **Leaf Admin**. Preencha **URL base do ERP** (`https`, sem barra no final e sem `/api`) e o **token**. **Testar conexão** aparece nesse tipo, como nos outros tipos de serviço, e continua ausente no genérico.
-2. Em Componentes → Integrações, crie a instância **Leaf Admin** e escolha essa credencial. **Testar comunicação**, na integração já salva, usa a URL e o token dessa credencial e não devolve o token.
+2. Em Componentes → Integrações, crie a instância **Leaf Admin** e escolha essa credencial. A integração não tem botão de teste; o teste fica na credencial.
 3. O webhook exige autenticação (`NONE` é recusado na gravação). Na mesma tela, estratégia **cabeçalho estático** e um segredo do cofre em `inboundSecretRef`. O nome padrão do cabeçalho é `x-webhook-token`. `config.authHeader` troca o nome.
 
 ## Identidade

@@ -14,6 +14,7 @@ import { clipText } from "@/lib/text";
 import { resolveInjectableCredentialEntry } from "@/modules/vault/injectable";
 import { leafInvoiceExternalId } from "../leaf-admin-mapper";
 import { leafApiBase, leafSystemUrlProblem } from "../leaf-system-url";
+import { fetchDespiteExpiredCertificate } from "../leaf-tls";
 import {
   type IntegrationSelection,
   registerToolpack,
@@ -24,7 +25,8 @@ import {
 
 // Leaf Admin outbound toolpack. The ERP root and the token come from the leaf_admin
 // credential (header x-auth-header, then /api/v2). The contact phone is the Chatwoot
-// mirror. TLS verification stays the runtime default. A write runs only when confirmed is true.
+// mirror. A write runs only when confirmed is true. An expired certificate is retried
+// once so the HTTP request still leaves (`leaf-tls.ts`).
 
 const TIMEOUT_MS = 15_000;
 const LIST_CAP = 64_000;
@@ -201,7 +203,6 @@ function leafUrl(
   return qs ? `${base}${path}?${qs}` : `${base}${path}`;
 }
 
-// TLS stays the runtime default: the request sets no custom agent and does not disable verification.
 async function leafRequest(
   ready: Ready,
   ctx: ToolpackCtx,
@@ -231,7 +232,9 @@ async function leafRequest(
       ),
     };
   }
-  const doFetch = ctx.fetchImpl ?? fetch;
+  const baseFetch = ctx.fetchImpl ?? fetch;
+  const doFetch = ((input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+    fetchDespiteExpiredCertificate(baseFetch, input, init)) as typeof fetch;
   let status = 0;
   let json: unknown = null;
   let truncated = false;

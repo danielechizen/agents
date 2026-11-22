@@ -171,8 +171,6 @@
     "inboxStillExists": "This inbox still exists in Chatwoot. Delete it there first.",
     "instanceChannelNeedsUrl": "This channel has no URL yet: set it before enabling or testing it",
     "integrationConfigOutOfRange": "\"{{field}}\" must be between {{min}} and {{max}}.",
-    "integrationConnectionTestRateLimited": "At most {{limit}} connection tests a minute. Wait a moment and try again.",
-    "integrationConnectionTestUnsupported": "The {{integration}} integration has no connection test.",
     "integrationFetchBackUnusable": "The notification lookup cannot be used (\"{{field}}\"): {{problem}}.",
     "integrationHeaderNameUnusable": "The \"{{field}}\" value is not a usable header name: use only letters, digits and !#$%&'*+-.^_`|~ (no spaces or line breaks).",
     "integrationHttpError": "{{provider}} returned HTTP {{status}}.",

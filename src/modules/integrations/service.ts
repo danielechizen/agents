@@ -20,7 +20,6 @@ import {
   undisclosedMoved,
 } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
-import { resolveInjectableCredentialEntry } from "@/modules/vault/injectable";
 import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
 import { isUsableHeaderName } from "@/modules/webhooks/inbound/auth";
 import {
@@ -40,7 +39,6 @@ import { isFetchBackProblem, parseFetchBackConfig } from "./fetch-back";
 import { fetchBackToolProblem } from "./fetch-back-run";
 import { leafSystemUrlProblem } from "./leaf-system-url";
 import { SPREADSHEET_ID_PATTERN } from "./toolpacks/google-sheets";
-import { type LeafProbe, probeLeafAdmin } from "./toolpacks/leaf-admin";
 import type { CatalogEntry } from "./types";
 
 // Integration instances: the per-tenant activation of a catalog entry. Creation mints the opaque
@@ -767,89 +765,6 @@ export async function rotateIntegrationRouteToken(
       after: { catalogType: current.catalogType, name: current.name },
     });
     return { routeToken: minted.token };
-  });
-}
-
-export const LEAF_CONNECTION_TEST_PER_MINUTE = 10;
-
-const leafConnectionTests = new Map<string, number[]>();
-
-function takeLeafConnectionTest(tenantId: bigint, now: number): boolean {
-  const key = tenantId.toString();
-  const window = (leafConnectionTests.get(key) ?? []).filter(
-    (at) => now - at < 60_000,
-  );
-  if (window.length >= LEAF_CONNECTION_TEST_PER_MINUTE) {
-    leafConnectionTests.set(key, window);
-    return false;
-  }
-  window.push(now);
-  leafConnectionTests.set(key, window);
-  return true;
-}
-
-// The button on a saved Leaf Admin integration. The URL and the token are the
-// ones on the Leaf Admin credential. The answer never carries the token.
-export async function testLeafConnection(
-  ctx: TenantContext,
-  id: bigint,
-  base: PrismaClient = basePrisma,
-  deps: {
-    fetchImpl?: typeof fetch;
-    assertSafe?: (url: string) => Promise<URL>;
-    resolveCredentialEntry?: typeof resolveInjectableCredentialEntry;
-    now?: number;
-  } = {},
-): Promise<LeafProbe | { ok: false; code: "unread" }> {
-  if (ctx.tenantId === null) throw new AppError("tenant required", 400);
-  const tenantId = ctx.tenantId;
-  const row = await runScopedOn(base, ctx, (db) =>
-    db.integrationInstance.findUnique({
-      where: { id },
-      select: { catalogType: true, config: true, credentialRef: true },
-    }),
-  );
-  if (!row) {
-    throw new NotFoundError(
-      "integration instance not found",
-      "errors.integrationInstanceNotFound",
-    );
-  }
-  if (row.catalogType !== "LEAF_ADMIN") {
-    throw new AppError(
-      `integration ${row.catalogType} has no connection test`,
-      422,
-      "errors.integrationConnectionTestUnsupported",
-      { integration: row.catalogType },
-    );
-  }
-  if (!row.credentialRef) return { ok: false, code: "missing_token" };
-  let entry: Awaited<ReturnType<typeof resolveInjectableCredentialEntry>>;
-  try {
-    entry = await (
-      deps.resolveCredentialEntry ?? resolveInjectableCredentialEntry
-    )(base, tenantId, row.credentialRef);
-  } catch {
-    logger.warn({ phase: "credential" }, "leaf-admin: credential read failed");
-    return { ok: false, code: "unread" };
-  }
-  if (!entry) return { ok: false, code: "unread" };
-  if (entry.kind !== "leaf_admin") return { ok: false, code: "wrong_kind" };
-  if (!entry.baseUrl) return { ok: false, code: "missing_url" };
-  if (!entry.value) return { ok: false, code: "missing_token" };
-  return probeLeafAdmin({ system_url: entry.baseUrl }, entry.value, {
-    fetchImpl: deps.fetchImpl,
-    assertSafe: deps.assertSafe,
-    beforeFetch: () => {
-      if (!takeLeafConnectionTest(tenantId, deps.now ?? Date.now())) {
-        throw new AppError(
-          `at most ${LEAF_CONNECTION_TEST_PER_MINUTE} connection tests a minute`,
-          429,
-          "errors.integrationConnectionTestRateLimited",
-          { limit: LEAF_CONNECTION_TEST_PER_MINUTE },
-        );
-      }
-    },
   });
 }
 

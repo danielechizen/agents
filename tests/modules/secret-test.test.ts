@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import logger from "@/api/lib/logger";
 import {
   runSecretTest,
   type SecretTestDeps,
@@ -114,7 +115,10 @@ describe("runSecretTest", () => {
   });
 
   test("probes Leaf Admin on the supplied ERP root with x-auth-header", async () => {
-    const { calls, fetchImpl } = fakeFetch();
+    const { calls, fetchImpl } = fakeFetch(
+      {},
+      { "erp.example.com": JSON.stringify({ statusCode: 1 }) },
+    );
     const r = await runSecretTest(
       {
         kind: "leaf_admin",
@@ -129,6 +133,79 @@ describe("runSecretTest", () => {
     );
     expect(calls[0]?.headers["x-auth-header"]).toBe("leaf-token");
     expect(calls[0]?.url).not.toContain("leaf-token");
+  });
+
+  test("retries only an expired certificate and does not treat a Leaf ERROR as success", async () => {
+    const lines: unknown[] = [];
+    const original = logger.info.bind(logger);
+    logger.info = ((obj: unknown, msg?: string) => {
+      lines.push({ obj, msg });
+    }) as typeof logger.info;
+    let calls = 0;
+    const fetchImpl = (async (_input: string, init?: RequestInit) => {
+      calls += 1;
+      if (calls === 1) {
+        const err = new Error("certificate has expired");
+        (err as { code?: string }).code = "CERT_HAS_EXPIRED";
+        throw err;
+      }
+      expect(
+        (init as { tls?: { rejectUnauthorized?: boolean } }).tls
+          ?.rejectUnauthorized,
+      ).toBe(false);
+      return new Response(
+        JSON.stringify({
+          statusCode: "ERROR",
+          detailCode: "FORBIDDEN",
+          detailDescription:
+            "Might Not Have Necessary Permissions For The Resource leaf-token",
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    try {
+      const r = await runSecretTest(
+        {
+          kind: "leaf_admin",
+          value: "leaf-token",
+          baseURL: "https://erp.example.com",
+        },
+        { fetchImpl, assertSafe: passAssert },
+      );
+      expect(r).toEqual({
+        testable: true,
+        ok: false,
+        code: "forbidden",
+        status: 200,
+      });
+      expect(calls).toBe(2);
+      const dumped = JSON.stringify(lines);
+      expect(dumped).toContain(
+        "https://erp.example.com/api/v2/integrations/contracts?page=1&limit=1",
+      );
+      expect(dumped).toContain("leaf-admin: credential test");
+      expect(dumped).not.toContain("leaf-token");
+    } finally {
+      logger.info = original as typeof logger.info;
+    }
+  });
+
+  test("does not retry a Leaf Admin failure that is not an expired certificate", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      throw new Error("self-signed certificate");
+    }) as unknown as typeof fetch;
+    const r = await runSecretTest(
+      {
+        kind: "leaf_admin",
+        value: "leaf-token",
+        baseURL: "https://erp.example.com",
+      },
+      { fetchImpl, assertSafe: passAssert },
+    );
+    expect(r).toEqual({ testable: true, ok: false, code: "unreachable" });
+    expect(calls).toBe(1);
   });
 
   test("probes the chatwoot profile endpoint on the supplied base", async () => {

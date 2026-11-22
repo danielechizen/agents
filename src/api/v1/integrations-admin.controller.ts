@@ -20,7 +20,6 @@ import {
   listCatalog,
   listIntegrationInstances,
   rotateIntegrationRouteToken,
-  testLeafConnection,
   updateIntegrationInstance,
 } from "@/modules/integrations/service";
 import { getToolpackToolViews } from "@/modules/integrations/toolpacks";
@@ -62,8 +61,6 @@ function inboundUrlOf(routeToken: string | null): string | null {
 // translate('errors.integrationSheetsConfigInvalid', '"{{field}}" must be the spreadsheet id or the numeric tab id, not a URL or a tab name. Pick the spreadsheet and the tab again in the integration settings.')
 // translate('errors.integrationSheetsConfigMissing', '"{{field}}" is missing. Choose the spreadsheet and the tab in the integration settings.')
 // translate('errors.integrationLeafSystemUrl', 'The ERP base URL ({{field}}) {{problem}}.')
-// translate('errors.integrationConnectionTestUnsupported', 'The {{integration}} integration has no connection test.')
-// translate('errors.integrationConnectionTestRateLimited', 'At most {{limit}} connection tests a minute. Wait a moment and try again.')
 // translate('errors.integrationNoInboundWebhook', 'The {{integration}} integration has no inbound webhook.')
 // translate('errors.invalidCredentialRef', 'The credential reference is not valid.')
 
@@ -479,30 +476,6 @@ export const integrationsAdminController = new Elysia({
         ),
       }),
       response: errors(400, 401, 403, 404, 409, 422, 429),
-    },
-  )
-  .post(
-    "/instances/:id/test-connection",
-    async ({ tenantContext, params }) => ({
-      instance: instanceIdentity,
-      ...(await testLeafConnection(
-        ctxOrThrow(tenantContext),
-        requireDbId(params.id),
-      )),
-    }),
-    {
-      requireRole: "TENANT_ADMIN",
-      detail: doc(
-        "Test a saved Leaf Admin connection",
-        "Calls the saved Leaf Admin ERP with the URL and token on the Leaf Admin credential, from this instance. Returns the HTTP status and statusCode, or a short failure code. Never returns the token or the response body.",
-      ),
-      params: t.Object({
-        id: t.String({
-          description:
-            "Integration instance id (BigInt serialized as a string).",
-        }),
-      }),
-      response: errors(400, 401, 403, 404, 429),
     },
   )
   .delete(

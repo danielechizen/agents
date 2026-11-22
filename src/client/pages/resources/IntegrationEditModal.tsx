@@ -45,7 +45,6 @@ import {
   toolpackToolMeta,
   withToolpackArgNotes,
 } from "@/client/lib/toolpackTools";
-import { cn } from "@/client/lib/utils";
 import { inRange, intRange } from "@/lib/number-range";
 import {
   CALENDAR_CONFIG_RANGES,
@@ -273,89 +272,6 @@ function defaultConfig(catalogType: string): Record<string, unknown> {
       return { notifyOnPayment: true };
     default:
       return {};
-  }
-}
-
-type LeafProbeView =
-  | { ok: true; httpStatus: number; statusCode: string }
-  | {
-      ok: false;
-      code: string;
-      httpStatus?: number;
-      statusCode?: string;
-    };
-
-function leafProbeMessage(t: TFunction, probe: LeafProbeView): string {
-  if (probe.ok) {
-    return t(
-      "integrations.config.leafTestOk",
-      "Connection OK (HTTP {{status}}, statusCode {{statusCode}}).",
-      { status: probe.httpStatus, statusCode: probe.statusCode },
-    );
-  }
-  const status = probe.httpStatus ?? 0;
-  switch (probe.code) {
-    case "rejected":
-      return t(
-        "integrations.config.leafTestRejected",
-        "Leaf Admin rejected the credential (HTTP {{status}}).",
-        { status },
-      );
-    case "answered":
-      return probe.statusCode
-        ? t(
-            "integrations.config.leafTestAnswered",
-            "Leaf Admin answered but did not accept the call (HTTP {{status}}, statusCode {{statusCode}}).",
-            { status, statusCode: probe.statusCode },
-          )
-        : t(
-            "integrations.config.leafTestHttp",
-            "Leaf Admin answered with an error (HTTP {{status}}).",
-            { status },
-          );
-    case "http":
-      return t(
-        "integrations.config.leafTestHttp",
-        "Leaf Admin answered with an error (HTTP {{status}}).",
-        { status },
-      );
-    case "timeout":
-      return t("integrations.config.leafTestTimeout", "The test timed out.");
-    case "blocked":
-      return t(
-        "integrations.config.leafTestBlocked",
-        "The ERP base URL on the credential was refused.",
-      );
-    case "unread":
-      return t(
-        "integrations.config.leafTestUnread",
-        "The saved credential could not be read.",
-      );
-    case "missing_url":
-      return t(
-        "integrations.config.leafTestMissingUrl",
-        "The Leaf Admin credential is missing the ERP base URL.",
-      );
-    case "missing_token":
-      return t(
-        "integrations.config.leafTestMissingToken",
-        "The Leaf Admin credential is missing the token.",
-      );
-    case "wrong_kind":
-      return t(
-        "integrations.config.leafTestWrongKind",
-        "The credential must be the Leaf Admin type.",
-      );
-    case "missing":
-      return t(
-        "integrations.config.leafTestMissing",
-        "Save the URL and the credential first.",
-      );
-    default:
-      return t(
-        "integrations.config.leafTestUnreachable",
-        "Could not reach Leaf Admin.",
-      );
   }
 }
 
@@ -901,9 +817,6 @@ export function IntegrationEditModal({
   const [httpTools, setHttpTools] = useState<FetchBackTool[] | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [probing, setProbing] = useState(false);
-  const [probe, setProbe] = useState<LeafProbeView | null>(null);
-  const [probeNote, setProbeNote] = useState<string | null>(null);
   const [loadingForm, setLoadingForm] = useState(false);
   const [loadError, setLoadError] = useState(false);
   // Google Calendar: the calendars the connected credential can see (picker source).
@@ -1013,8 +926,6 @@ export function IntegrationEditModal({
   useOnModalOpen(modal, () => {
     // The component outlives the dialog, so a mark from the last session is still held here.
     refusal.clear();
-    setProbe(null);
-    setProbeNote(null);
     setLoadError(false);
     setAvailableCals([]);
     setCalError(false);
@@ -1116,8 +1027,6 @@ export function IntegrationEditModal({
       form.name ===
         catalogLabel(catalog.find((x) => x.catalogType === form.catalogType));
     loadedConfig.current = defaultConfig(c.catalogType);
-    setProbe(null);
-    setProbeNote(null);
     setForm({
       ...form,
       catalogType: c.catalogType,
@@ -1133,52 +1042,6 @@ export function IntegrationEditModal({
     setFolderLoaded(false);
     setFolderFilter("");
     syncSlotModes(defaultConfig(c.catalogType));
-  }
-
-  async function testSavedLeaf() {
-    if (!editId || probing) return;
-    setProbing(true);
-    setProbe(null);
-    setProbeNote(null);
-    try {
-      const { data, error } = await api.api.v1.integrations
-        .instances({ id: editId })
-        ["test-connection"].post();
-      if (error || !data) {
-        setProbeNote(
-          apiErrorMessage(error) ||
-            t(
-              "integrations.config.leafTestUnreachable",
-              "Could not reach Leaf Admin.",
-            ),
-        );
-        return;
-      }
-      if (data.ok) {
-        setProbe({
-          ok: true,
-          httpStatus: data.httpStatus,
-          statusCode: data.statusCode,
-        });
-      } else {
-        setProbe({
-          ok: false,
-          code: data.code,
-          httpStatus: "httpStatus" in data ? data.httpStatus : undefined,
-          statusCode: "statusCode" in data ? data.statusCode : undefined,
-        });
-      }
-    } catch (e) {
-      setProbeNote(
-        apiErrorMessage(e) ||
-          t(
-            "integrations.config.leafTestUnreachable",
-            "Could not reach Leaf Admin.",
-          ),
-      );
-    } finally {
-      setProbing(false);
-    }
   }
 
   async function save() {
@@ -1381,7 +1244,7 @@ export function IntegrationEditModal({
         modal={modal}
         size="lg"
         unsavedChanges={isDirty}
-        busy={saving || testing || probing}
+        busy={saving || testing}
         title={
           editId
             ? t("integrations.editTitle", "Edit integration")
@@ -1389,13 +1252,12 @@ export function IntegrationEditModal({
         }
         footer={
           <div className="flex justify-end gap-2">
-            <ModalCancelButton disabled={saving || testing || probing} />
+            <ModalCancelButton disabled={saving || testing} />
             <Button
               onClick={save}
               loading={saving}
               disabled={
                 testing ||
-                probing ||
                 loadingForm ||
                 loadError ||
                 !form.name.trim() ||
@@ -1510,48 +1372,6 @@ export function IntegrationEditModal({
                   </p>
                 )}
               </FormField>
-            )}
-
-            {/* ── Per-toolpack configuration ── */}
-            {isLeaf && (
-              <div className="flex flex-col gap-2">
-                <div>
-                  <Button
-                    variant="secondary"
-                    loading={probing}
-                    disabled={!editId || isDirty || saving}
-                    onClick={() => void testSavedLeaf()}
-                  >
-                    {t("integrations.config.leafTest", "Test connection")}
-                  </Button>
-                </div>
-                <p className="text-text-muted text-xs">
-                  {editId && !isDirty
-                    ? t(
-                        "integrations.config.leafTestHint",
-                        "Uses the URL and token saved on the Leaf Admin credential.",
-                      )
-                    : t(
-                        "integrations.config.leafTestSaveFirst",
-                        "Save the integration to test.",
-                      )}
-                </p>
-                {probeNote ? (
-                  <p className="text-error text-sm" role="status">
-                    {probeNote}
-                  </p>
-                ) : probe ? (
-                  <p
-                    className={cn(
-                      "text-sm",
-                      probe.ok ? "text-success" : "text-error",
-                    )}
-                    role="status"
-                  >
-                    {leafProbeMessage(t, probe)}
-                  </p>
-                ) : null}
-              </div>
             )}
 
             {form.catalogType === "ASAAS" && (

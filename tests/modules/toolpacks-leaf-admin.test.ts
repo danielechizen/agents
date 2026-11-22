@@ -6,10 +6,7 @@ import { getCatalogEntry } from "@/modules/integrations/catalog";
 import { leafInvoiceExternalId } from "@/modules/integrations/leaf-admin-mapper";
 import { leafSystemUrlProblem } from "@/modules/integrations/leaf-system-url";
 import { getMapper } from "@/modules/integrations/mappers";
-import {
-  assertIntegrationWritable,
-  testLeafConnection,
-} from "@/modules/integrations/service";
+import { assertIntegrationWritable } from "@/modules/integrations/service";
 import {
   leafAdminToolpack,
   probeLeafAdmin,
@@ -805,59 +802,5 @@ describe("the connection test calls the saved Leaf Admin", () => {
     });
     expect(result).toEqual({ ok: false, code: "missing" });
     expect(calls).toHaveLength(0);
-  });
-
-  test("the saved generic credential is the header, and the eleventh call waits", async () => {
-    const row = {
-      catalogType: "LEAF_ADMIN",
-      config: saved,
-      credentialRef: "vault:leaf",
-    };
-    const tx = {
-      $executeRaw: async () => 1,
-      integrationInstance: { findUnique: async () => row },
-    };
-    const base = {
-      $extends: () => base,
-      $transaction: (fn: (db: typeof tx) => Promise<unknown>) => fn(tx),
-    } as unknown as PrismaClient;
-    const { impl, calls } = mockFetch(() => ({ json: { statusCode: "ok" } }));
-    const now = Date.UTC(2026, 0, 1);
-    const ctx = {
-      tenantId: 880011n,
-      userId: null,
-      role: "TENANT_ADMIN" as const,
-    };
-    const entry = async () => ({
-      value: SECRET,
-      kind: "leaf_admin" as const,
-      baseUrl: BASE,
-      paramName: null,
-    });
-    const result = await testLeafConnection(ctx, 4n, base, {
-      fetchImpl: impl,
-      assertSafe: async () => new URL(BASE),
-      resolveCredentialEntry: entry,
-      now,
-    });
-    expect(result).toEqual({ ok: true, httpStatus: 200, statusCode: "ok" });
-    expect(header(calls[0]?.init ?? {}, "x-auth-header")).toBe(SECRET);
-    for (let i = 0; i < 9; i++) {
-      await testLeafConnection(ctx, 4n, base, {
-        fetchImpl: impl,
-        assertSafe: async () => new URL(BASE),
-        resolveCredentialEntry: entry,
-        now,
-      });
-    }
-    await expect(
-      testLeafConnection(ctx, 4n, base, {
-        fetchImpl: impl,
-        assertSafe: async () => new URL(BASE),
-        resolveCredentialEntry: entry,
-        now,
-      }),
-    ).rejects.toThrow("at most 10 connection tests a minute");
-    expect(calls).toHaveLength(10);
   });
 });
