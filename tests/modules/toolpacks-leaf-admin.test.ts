@@ -287,15 +287,27 @@ describe("leaf admin toolpack — identity", () => {
     expect(out).not.toContain(SECRET);
   });
 
-  test("without a contact and without a document the lookup refuses in Portuguese", async () => {
-    const { impl, calls } = mockFetch(() => ({ json: contractsPayload([]) }));
-    const out = (await tool("leaf_lookup_customer", {
-      fetchImpl: impl,
+  test("an empty lookup does not call Leaf and names the missing phone or document", async () => {
+    const noContact = mockFetch(() => ({ json: contractsPayload([]) }));
+    const missing = (await tool("leaf_lookup_customer", {
+      fetchImpl: noContact.impl,
       contactDbId: null,
     }).invoke({})) as string;
-    expect(calls).toHaveLength(0);
-    expect(out).toContain("Não há contato nesta conversa e não veio CPF/CNPJ");
-    expect(out).not.toContain("no contact on file");
+    expect(noContact.calls).toHaveLength(0);
+    expect(missing).toContain(
+      "Falta o telefone do contato ou o CPF/CNPJ de 11 ou 14 dígitos.",
+    );
+    expect(missing).toContain("Pergunte o CPF ou CNPJ ao cliente.");
+    expect(missing).not.toContain("aguardando");
+    expect(missing).not.toContain("skip_reply");
+
+    const noPhone = mockFetch(() => ({ json: contractsPayload([]) }));
+    const again = (await tool("leaf_lookup_customer", {
+      fetchImpl: noPhone.impl,
+      base: contactBase({ phone: null, customAttributes: {} }),
+    }).invoke({})) as string;
+    expect(noPhone.calls).toHaveLength(0);
+    expect(again).toContain("Falta o telefone do contato");
   });
 
   test("a CPF the customer stated is sent when the contact has no cpf_cnpj", async () => {

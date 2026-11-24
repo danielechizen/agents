@@ -604,21 +604,12 @@ async function findContracts(
       return { ok: true, matchedBy: "document", contracts: listed.rows };
     }
   }
-  if (ctx.contactDbId == null && !stated.digits) {
-    return {
-      ok: false,
-      failure: fail(
-        ready.token,
-        "Não há contato nesta conversa e não veio CPF/CNPJ. Passe document com 11 ou 14 dígitos.",
-      ),
-    };
-  }
   if (!identity.phone && !identity.document && !stated.digits) {
     return {
       ok: false,
       failure: fail(
         ready.token,
-        "This contact has no phone and no stored CPF/CNPJ. Pass document as the CPF/CNPJ the customer stated, 11 or 14 digits.",
+        "Falta o telefone do contato ou o CPF/CNPJ de 11 ou 14 dígitos. Pergunte o CPF ou CNPJ ao cliente.",
       ),
     };
   }
