@@ -93,6 +93,40 @@ function catalogLabelOf(
   }
 }
 
+// How Leaf Admin finds the customer. The parameters are the ones `findContracts` sends:
+// `phone` first, then `document` from the contact attribute `cpf_cnpj` only when the phone
+// matches nothing. Later tools may use only a contract id or connectionId from that list.
+export function LeafLookupHelp() {
+  const { t } = useTranslation();
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-text-secondary text-sm font-medium">
+        {t("integrations.leafLookupTitle", "How the lookup finds the customer")}
+      </span>
+      <div className="text-text-muted flex flex-col gap-1 text-xs">
+        <p>
+          {t(
+            "integrations.leafLookupPhone",
+            "The lookup starts with the Chatwoot contact's phone, the phone parameter on GET /integrations/contracts. The model does not supply the phone, the URL, the token or an id.",
+          )}
+        </p>
+        <p>
+          {t(
+            "integrations.leafLookupDocument",
+            "If the phone matches nothing, the CPF/CNPJ is sent only when the contact already has the cpf_cnpj attribute, as the document parameter.",
+          )}
+        </p>
+        <p>
+          {t(
+            "integrations.leafLookupIds",
+            "The contract and the connectionId used afterwards are the ones that search returned.",
+          )}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // One line per kind, on the card (agents#1254): what the integration does, short enough to choose
 // by. The full description stays under the cards for the kind chosen.
 function catalogHintOf(
@@ -1328,6 +1362,7 @@ export function IntegrationEditModal({
                 {catalogDescription(selectedCatalog)}
               </p>
             )}
+            {isLeaf && <LeafLookupHelp />}
 
             <FormField
               label={t("integrations.name", "Name")}
