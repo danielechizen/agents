@@ -1,0 +1,1114 @@
+import { describe, expect, test } from "bun:test";
+import type { PrismaClient } from "@/../generated/prisma/client";
+import { credentialCompat } from "@/client/lib/credentialCompat";
+import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { getCatalogEntry } from "@/modules/integrations/catalog";
+import { leafInvoiceExternalId } from "@/modules/integrations/leaf-admin-mapper";
+import { leafSystemUrlProblem } from "@/modules/integrations/leaf-system-url";
+import { getMapper } from "@/modules/integrations/mappers";
+import { assertIntegrationWritable } from "@/modules/integrations/service";
+import {
+  leafAdminToolpack,
+  probeLeafAdmin,
+} from "@/modules/integrations/toolpacks/leaf-admin";
+import type {
+  IntegrationSelection,
+  ToolpackCtx,
+} from "@/modules/integrations/toolpacks/types";
+import { assertVaultEntryCreatable } from "@/modules/vault/service";
+
+const SECRET = "LEAF_SECRET_KEY_DO_NOT_LEAK";
+const BASE = "https://leaf.example.com";
+const PHONE = "+55 (11) 98888-7777";
+const PHONE_DIGITS = "5511988887777";
+const DOCUMENT = "123.456.789-01";
+const DOCUMENT_DIGITS = "12345678901";
+
+type Call = { url: string; init: RequestInit };
+
+function ok(json: unknown, status = 200): Response {
+  return new Response(JSON.stringify(json), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function mockFetch(
+  reply: (
+    url: string,
+    init: RequestInit,
+  ) => { status?: number; json: unknown } | "throw",
+) {
+  const calls: Call[] = [];
+  const impl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const i = init ?? {};
+    calls.push({ url: String(url), init: i });
+    const answered = reply(String(url), i);
+    if (answered === "throw") throw new Error(`socket ${SECRET}`);
+    return ok(answered.json, answered.status ?? 200);
+  }) as unknown as typeof fetch;
+  return { impl, calls };
+}
+
+function header(init: RequestInit, name: string): string | undefined {
+  const headers = init.headers as Record<string, string> | undefined;
+  return headers?.[name];
+}
+
+function bodyOf(init: RequestInit): unknown {
+  return JSON.parse(String(init.body ?? "null"));
+}
+
+function contactBase(
+  row: {
+    phone: string | null;
+    customAttributes: Record<string, unknown>;
+  } | null,
+  refs: Array<{ externalId: string }> = [],
+) {
+  const tx = {
+    $executeRaw: async () => 1,
+    contact: { findUnique: async () => row },
+    integrationExternalRef: {
+      upsert: async (args: { create: { externalId: string } }) => {
+        refs.push(args.create);
+        return args.create;
+      },
+    },
+  };
+  const client = {
+    $extends: () => client,
+    $transaction: (fn: (db: typeof tx) => Promise<unknown>) => fn(tx),
+  };
+  return client as unknown as PrismaClient;
+}
+
+function ctx(over: Partial<ToolpackCtx> = {}): ToolpackCtx {
+  return {
+    tenantId: 1n,
+    base: contactBase({ phone: PHONE, customAttributes: {} }),
+    threadId: "1:1:9",
+    contactDbId: 7n,
+    resolveCredential: async () => SECRET,
+    resolveCredentialEntry: async () => ({
+      value: SECRET,
+      kind: "leaf_admin",
+      baseUrl: BASE,
+    }),
+    assertSafe: async () => undefined,
+    ...over,
+  };
+}
+
+function sel(over: Partial<IntegrationSelection> = {}): IntegrationSelection {
+  return {
+    instanceId: 4n,
+    catalogType: "LEAF_ADMIN",
+    config: { system_url: BASE },
+    credentialRef: "vault:leaf",
+    enabledTools: [],
+    ...over,
+  };
+}
+
+function tool(
+  name: string,
+  overCtx: Partial<ToolpackCtx> = {},
+  config?: Record<string, unknown>,
+) {
+  const built = leafAdminToolpack.build(
+    sel({
+      enabledTools: [name],
+      ...(config ? { config } : {}),
+    }),
+    ctx(overCtx),
+  );
+  const found = built[0];
+  if (!found) throw new Error(`missing tool ${name}`);
+  return found;
+}
+
+const CONTRACT = {
+  id: 15,
+  name: "Maria",
+  status: "active",
+  connectionId: 99,
+  customerId: "cust-1",
+  address: { street: "Rua A", number: "10" },
+};
+
+function contractsPayload(results: unknown[], total = results.length) {
+  return { statusCode: 1, results, total };
+}
+
+describe("leaf admin catalog and mapper", () => {
+  test("the catalog entry is an authenticated outbound toolpack", () => {
+    expect(getCatalogEntry("LEAF_ADMIN")).toMatchObject({
+      kind: "TOOLPACK",
+      supportsInbound: true,
+      defaultInboundAuth: "STATIC_HEADER",
+      requiresInboundAuth: true,
+    });
+  });
+
+  test("INVOICE_PAID wakes the conversation stored for that invoice id", () => {
+    const mapped = getMapper("LEAF_ADMIN")?.map({
+      event: "INVOICE_PAID",
+      data: {
+        id: 15,
+        uid: "uid-15",
+        due_date: "2026-11-01",
+        value: 89.9,
+        status: "paid",
+      },
+    });
+    expect(mapped).toEqual({
+      ok: true,
+      event: {
+        kind: "agent_nudge",
+        externalId: leafInvoiceExternalId("15"),
+        dedupeKey: "INVOICE_PAID:15",
+        summary: "Invoice paid",
+        status: "paid",
+        value: 89.9,
+        metadata: { dueDate: "2026-11-01" },
+      },
+    });
+  });
+
+  test("a paid invoice with only uid correlates on the uid", () => {
+    const mapped = getMapper("LEAF_ADMIN")?.map({
+      event: "INVOICE_PAID",
+      data: { uid: "uid-9", value: 10, status: "paid" },
+    });
+    expect(mapped?.ok).toBe(true);
+    if (mapped?.ok)
+      expect(mapped.event.externalId).toBe(leafInvoiceExternalId("uid-9"));
+  });
+
+  test("other events are ignored and a broken body is invalid", () => {
+    expect(
+      getMapper("LEAF_ADMIN")?.map({
+        event: "INVOICE_OPENED",
+        data: { id: 1 },
+      }),
+    ).toEqual({
+      ok: false,
+      reason: "unhandled",
+    });
+    expect(getMapper("LEAF_ADMIN")?.map({ event: "INVOICE_PAID" })?.ok).toBe(
+      false,
+    );
+    expect(getMapper("LEAF_ADMIN")?.map({ nope: true })).toMatchObject({
+      ok: false,
+      reason: "invalid",
+    });
+  });
+});
+
+describe("leaf admin toolpack — identity", () => {
+  test("phone lookup uses the contact phone and skips the stored document", async () => {
+    const { impl, calls } = mockFetch((url) => {
+      const u = new URL(url);
+      if (u.pathname.endsWith("/integrations/contracts")) {
+        return { json: contractsPayload([CONTRACT]) };
+      }
+      return { json: { statusCode: 0 } };
+    });
+    const out = (await tool("leaf_lookup_customer", {
+      fetchImpl: impl,
+      base: contactBase({
+        phone: PHONE,
+        customAttributes: { cpf_cnpj: DOCUMENT },
+      }),
+    }).invoke({})) as string;
+    expect(calls).toHaveLength(1);
+    const u = new URL(calls[0]?.url ?? "");
+    expect(u.pathname).toBe("/api/v2/integrations/contracts");
+    expect(u.searchParams.get("phone")).toBe(PHONE_DIGITS);
+    expect(u.searchParams.get("document")).toBeNull();
+    expect(u.searchParams.get("page")).toBe("1");
+    expect(u.searchParams.get("limit")).toBe("50");
+    expect(header(calls[0]?.init ?? {}, "x-auth-header")).toBe(SECRET);
+    expect(out).toContain("Maria");
+    expect(out).toContain('"matchedBy":"phone"');
+    expect(out).not.toContain(SECRET);
+  });
+
+  test("document is the fallback only when the phone matches nothing", async () => {
+    const { impl, calls } = mockFetch((url) => {
+      const u = new URL(url);
+      if (u.searchParams.get("phone")) return { json: contractsPayload([]) };
+      if (u.searchParams.get("document") === DOCUMENT_DIGITS) {
+        return { json: contractsPayload([{ id: "8", name: "Por CPF" }]) };
+      }
+      return { json: contractsPayload([]) };
+    });
+    const out = (await tool("leaf_lookup_customer", {
+      fetchImpl: impl,
+      base: contactBase({
+        phone: PHONE,
+        customAttributes: { cpf_cnpj: DOCUMENT },
+      }),
+    }).invoke({ document: "98.765.432/0001-10" })) as string;
+    expect(calls).toHaveLength(2);
+    expect(new URL(calls[0]?.url ?? "").searchParams.get("phone")).toBe(
+      PHONE_DIGITS,
+    );
+    expect(new URL(calls[1]?.url ?? "").searchParams.get("document")).toBe(
+      DOCUMENT_DIGITS,
+    );
+    expect(out).toContain("Por CPF");
+    expect(out).toContain('"matchedBy":"document"');
+  });
+
+  test("without a contact a valid document still queries", async () => {
+    const { impl, calls } = mockFetch((url) => {
+      const u = new URL(url);
+      if (u.searchParams.get("document") === "01396884556") {
+        return { json: contractsPayload([{ id: "8", name: "Sem contato" }]) };
+      }
+      return { json: contractsPayload([]) };
+    });
+    const out = (await tool("leaf_lookup_customer", {
+      fetchImpl: impl,
+      contactDbId: null,
+      base: contactBase({
+        phone: PHONE,
+        customAttributes: { cpf_cnpj: DOCUMENT },
+      }),
+    }).invoke({ document: "01396884556" })) as string;
+    expect(calls).toHaveLength(1);
+    const u = new URL(calls[0]?.url ?? "");
+    expect(u.pathname).toBe("/api/v2/integrations/contracts");
+    expect(u.searchParams.get("document")).toBe("01396884556");
+    expect(u.searchParams.get("phone")).toBeNull();
+    expect(out).toContain("Sem contato");
+    expect(out).not.toContain(SECRET);
+  });
+
+  test("an empty lookup does not call Leaf and names the missing phone or document", async () => {
+    const noContact = mockFetch(() => ({ json: contractsPayload([]) }));
+    const missing = (await tool("leaf_lookup_customer", {
+      fetchImpl: noContact.impl,
+      contactDbId: null,
+    }).invoke({})) as string;
+    expect(noContact.calls).toHaveLength(0);
+    expect(missing).toContain(
+      "Falta o telefone do contato ou o CPF/CNPJ de 11 ou 14 dígitos.",
+    );
+    expect(missing).toContain("Pergunte o CPF ou CNPJ ao cliente.");
+    expect(missing).not.toContain("aguardando");
+    expect(missing).not.toContain("skip_reply");
+
+    const noPhone = mockFetch(() => ({ json: contractsPayload([]) }));
+    const again = (await tool("leaf_lookup_customer", {
+      fetchImpl: noPhone.impl,
+      base: contactBase({ phone: null, customAttributes: {} }),
+    }).invoke({})) as string;
+    expect(noPhone.calls).toHaveLength(0);
+    expect(again).toContain("Falta o telefone do contato");
+  });
+
+  test("a CPF the customer stated is sent when the contact has no cpf_cnpj", async () => {
+    const { impl, calls } = mockFetch((url) => {
+      const u = new URL(url);
+      if (u.searchParams.get("phone")) return { json: contractsPayload([]) };
+      if (u.searchParams.get("document") === DOCUMENT_DIGITS) {
+        return { json: contractsPayload([{ id: "8", name: "Pelo cliente" }]) };
+      }
+      return { json: contractsPayload([]) };
+    });
+    const out = (await tool("leaf_lookup_customer", {
+      fetchImpl: impl,
+      base: contactBase({ phone: PHONE, customAttributes: {} }),
+    }).invoke({ document: DOCUMENT })) as string;
+    expect(calls).toHaveLength(2);
+    expect(new URL(calls[0]?.url ?? "").searchParams.get("phone")).toBe(
+      PHONE_DIGITS,
+    );
+    expect(new URL(calls[1]?.url ?? "").searchParams.get("document")).toBe(
+      DOCUMENT_DIGITS,
+    );
+    expect(out).toContain("Pelo cliente");
+    expect(out).not.toContain(SECRET);
+  });
+
+  test("a CNPJ the customer stated is 14 digits, and a short one is refused", async () => {
+    const cnpj = "12.345.678/0001-95";
+    const { impl, calls } = mockFetch((url) => {
+      const u = new URL(url);
+      if (u.searchParams.get("phone")) return { json: contractsPayload([]) };
+      if (u.searchParams.get("document") === "12345678000195") {
+        return { json: contractsPayload([{ id: "9", name: "Pelo CNPJ" }]) };
+      }
+      return { json: contractsPayload([]) };
+    });
+    const out = (await tool("leaf_lookup_customer", {
+      fetchImpl: impl,
+      base: contactBase({ phone: PHONE, customAttributes: {} }),
+    }).invoke({ document: cnpj })) as string;
+    expect(new URL(calls.at(-1)?.url ?? "").searchParams.get("document")).toBe(
+      "12345678000195",
+    );
+    expect(out).toContain("Pelo CNPJ");
+
+    const refused = mockFetch(() => ({ json: contractsPayload([]) }));
+    const bad = (await tool("leaf_lookup_customer", {
+      fetchImpl: refused.impl,
+      base: contactBase({ phone: PHONE, customAttributes: {} }),
+    }).invoke({ document: "123.456" })) as string;
+    expect(refused.calls).toHaveLength(0);
+    expect(bad).toContain("11 or 14");
+    expect(bad).not.toContain(SECRET);
+  });
+
+  test("pages until the total is covered and stops on an empty page", async () => {
+    const { impl, calls } = mockFetch((url) => {
+      const page = Number(new URL(url).searchParams.get("page"));
+      if (page === 1) {
+        return {
+          json: contractsPayload(
+            Array.from({ length: 50 }, (_, i) => ({ id: String(i + 1) })),
+            51,
+          ),
+        };
+      }
+      if (page === 2) return { json: contractsPayload([{ id: "51" }], 51) };
+      return { json: contractsPayload([{ id: "extra" }], 51) };
+    });
+    const out = (await tool("leaf_lookup_customer", { fetchImpl: impl }).invoke(
+      {},
+    )) as string;
+    expect(calls).toHaveLength(2);
+    expect(out).toContain('"id":"51"');
+    expect(out).not.toContain("extra");
+  });
+
+  test("an empty later page stops the walk", async () => {
+    const { impl, calls } = mockFetch((url) => {
+      const page = Number(new URL(url).searchParams.get("page"));
+      if (page === 1) return { json: contractsPayload([{ id: "1" }], 100) };
+      return { json: contractsPayload([], 100) };
+    });
+    await tool("leaf_lookup_customer", { fetchImpl: impl }).invoke({});
+    expect(calls).toHaveLength(2);
+  });
+
+  test("never asks for a 21st page", async () => {
+    const { impl, calls } = mockFetch((url) => {
+      const page = new URL(url).searchParams.get("page") ?? "0";
+      return { json: contractsPayload([{ id: page }], 10_000) };
+    });
+    await tool("leaf_lookup_customer", { fetchImpl: impl }).invoke({});
+    expect(calls).toHaveLength(20);
+  });
+});
+
+describe("leaf admin toolpack — reads", () => {
+  test("connection status strips the pppoe password", async () => {
+    const password = "PPPOE-SECRET-VALUE";
+    const { impl, calls } = mockFetch((url) => {
+      const u = new URL(url);
+      if (u.pathname.endsWith("/contracts"))
+        return { json: contractsPayload([CONTRACT]) };
+      return {
+        json: {
+          statusCode: "OK",
+          results: [
+            {
+              connectionId: 99,
+              status: "online",
+              pppoeLogin: "maria",
+              pppoePassword: password,
+              gpon: { status: "online", rxPower: -18, pppoePassword: password },
+            },
+          ],
+        },
+      };
+    });
+    const out = (await tool("leaf_connection_status", {
+      fetchImpl: impl,
+    }).invoke({
+      connectionId: "99",
+    })) as string;
+    const customer = calls.find((c) =>
+      c.url.includes("/integrations/customers"),
+    );
+    expect(new URL(customer?.url ?? "").searchParams.get("limit")).toBe("1");
+    expect(new URL(customer?.url ?? "").searchParams.get("connectionId")).toBe(
+      "99",
+    );
+    expect(out).toContain("online");
+    expect(out).toContain("maria");
+    expect(out).not.toContain(password);
+    expect(out).not.toContain("pppoePassword");
+  });
+
+  test("a connection the lookup did not return is refused", async () => {
+    const { impl, calls } = mockFetch(() => ({
+      json: contractsPayload([CONTRACT]),
+    }));
+    const out = (await tool("leaf_connection_status", {
+      fetchImpl: impl,
+    }).invoke({
+      connectionId: "404",
+    })) as string;
+    expect(out).toContain("not returned");
+    expect(calls.every((c) => c.url.includes("/contracts"))).toBe(true);
+  });
+
+  test("second copy for the contact phone returns pix and boleto", async () => {
+    const sent: Array<{ name: string; mime: string; text: string }> = [];
+    const refs: Array<{ externalId: string }> = [];
+    const { impl, calls } = mockFetch((url) => {
+      const u = new URL(url);
+      if (u.pathname.endsWith("/contracts"))
+        return { json: contractsPayload([CONTRACT]) };
+      if (u.pathname.endsWith("/billets")) {
+        return {
+          json: {
+            statusCode: 1,
+            paymentMethods: { pix: true, bankSlip: true, creditCard: true },
+            results: [
+              {
+                id: 7,
+                uid: "uid-7",
+                description: "Mensalidade",
+                amount: 89.9,
+                status: "delayed",
+              },
+            ],
+          },
+        };
+      }
+      if (u.searchParams.get("type") === "pix") {
+        return {
+          json: { statusCode: "ok", copyPaste: "000201PIX", qr: "qr-image" },
+        };
+      }
+      if (u.searchParams.get("type") === "bankSlip") {
+        return {
+          json: {
+            statusCode: 1,
+            url: "https://pay.example/boleto/7",
+            pdf: Buffer.from("hello-pdf").toString("base64"),
+          },
+        };
+      }
+      if (u.searchParams.get("type") === "creditCard") {
+        return { json: { statusCode: 1, url: "https://pay.example/card/7" } };
+      }
+      return { json: { statusCode: 0 } };
+    });
+    const second = tool("leaf_second_copy", {
+      fetchImpl: impl,
+      base: contactBase({ phone: PHONE, customAttributes: {} }, refs),
+      chatwoot: {
+        client: {
+          muted: false,
+          sendFileAttachment: async (
+            _id: number,
+            bytes: ArrayBuffer,
+            name: string,
+            mime: string,
+          ) => {
+            sent.push({ name, mime, text: new TextDecoder().decode(bytes) });
+          },
+        } as unknown as ChatwootClient,
+        conversationId: 9,
+      },
+    });
+    const pix = (await second.invoke({
+      contractId: "15",
+      invoiceId: "7",
+      type: "pix",
+    })) as string;
+    const boleto = (await second.invoke({
+      contractId: "15",
+      invoiceId: "7",
+      type: "boleto",
+    })) as string;
+    const card = (await second.invoke({
+      contractId: "15",
+      invoiceId: "7",
+      type: "card",
+    })) as string;
+    expect(
+      calls.some(
+        (c) => new URL(c.url).searchParams.get("phone") === PHONE_DIGITS,
+      ),
+    ).toBe(true);
+    expect(pix).toContain("000201PIX");
+    expect(pix).toContain("qr-image");
+    expect(boleto).toContain("https://pay.example/boleto/7");
+    expect(boleto).not.toContain(Buffer.from("hello-pdf").toString("base64"));
+    expect(sent).toEqual([
+      { name: "boleto-7.pdf", mime: "application/pdf", text: "hello-pdf" },
+    ]);
+    expect(card).toContain("https://pay.example/card/7");
+    expect(
+      calls.some((c) => c.url.includes("/billets/7/payment?type=pix")),
+    ).toBe(true);
+    expect(
+      calls.some((c) => c.url.includes("/billets/7/payment?type=bankSlip")),
+    ).toBe(true);
+    expect(
+      calls.some((c) => c.url.includes("/billets/7/payment?type=creditCard")),
+    ).toBe(true);
+    expect(refs.map((r) => r.externalId)).toContain(leafInvoiceExternalId("7"));
+    expect(refs.map((r) => r.externalId)).toContain(
+      leafInvoiceExternalId("uid-7"),
+    );
+  });
+
+  test("statusCode OK is a PIX success", async () => {
+    const { impl, calls } = mockFetch((url) => {
+      const u = new URL(url);
+      if (u.pathname.endsWith("/contracts")) {
+        return {
+          json: contractsPayload([{ id: 1, name: "Um", status: "active" }]),
+        };
+      }
+      if (u.pathname.endsWith("/billets")) {
+        return {
+          json: {
+            statusCode: "OK",
+            results: [{ id: 12799, description: "Mensalidade", amount: 99.9 }],
+          },
+        };
+      }
+      if (u.searchParams.get("type") === "pix") {
+        return {
+          json: {
+            apiVersion: 2,
+            statusCode: "OK",
+            detailCode: "OK",
+            detailDescription: "Done",
+            type: "pix",
+            amount: 99.9,
+            copyPaste: "00020126",
+            qrCode: "iVBORw0KGgo",
+            expiresAt: "2026-10-26T23:59:59",
+          },
+        };
+      }
+      return { json: { statusCode: 0 } };
+    });
+    const out = (await tool("leaf_second_copy", {
+      fetchImpl: impl,
+      contactDbId: null,
+    }).invoke({
+      contractId: "1",
+      document: "01396884556",
+      invoiceId: "12799",
+      type: "pix",
+    })) as string;
+    expect(
+      calls.some((c) => c.url.includes("/billets/12799/payment?type=pix")),
+    ).toBe(true);
+    expect(out).toContain("00020126");
+    expect(out).toContain("iVBORw0KGgo");
+    expect(out).not.toContain("rejected");
+  });
+
+  test("a QR without a copy-paste line is still a PIX success", async () => {
+    const { impl } = mockFetch((url) => {
+      const u = new URL(url);
+      if (u.pathname.endsWith("/contracts")) {
+        return { json: contractsPayload([{ id: 1, status: "active" }]) };
+      }
+      if (u.pathname.endsWith("/billets")) {
+        return { json: { statusCode: 1, results: [{ id: 12799 }] } };
+      }
+      return {
+        json: { statusCode: 2, type: "pix", qrCode: "iVBORw0KGgo" },
+      };
+    });
+    const out = (await tool("leaf_second_copy", {
+      fetchImpl: impl,
+      contactDbId: null,
+    }).invoke({
+      contractId: "1",
+      document: "01396884556",
+      invoiceId: "12799",
+      type: "pix",
+    })) as string;
+    expect(out).toContain("iVBORw0KGgo");
+    expect(out).not.toContain("rejected");
+    expect(out).not.toContain("did not return");
+  });
+
+  test("HTTP 200 with statusCode 0 stays a refusal even with a PIX payload", async () => {
+    const { impl, calls } = mockFetch((url) => {
+      const u = new URL(url);
+      if (u.pathname.endsWith("/contracts")) {
+        return { json: contractsPayload([{ id: 1, status: "active" }]) };
+      }
+      if (u.pathname.endsWith("/billets")) {
+        return { json: { statusCode: 1, results: [{ id: 12799 }] } };
+      }
+      return {
+        json: {
+          statusCode: 0,
+          detailCode: 20,
+          detailDescription: SECRET,
+          type: "pix",
+          copyPaste: "00020126",
+          qrCode: "iVBORw0KGgo",
+        },
+      };
+    });
+    const out = (await tool("leaf_second_copy", {
+      fetchImpl: impl,
+      contactDbId: null,
+    }).invoke({
+      contractId: "1",
+      document: "01396884556",
+      invoiceId: "12799",
+      type: "pix",
+    })) as string;
+    expect(calls.some((c) => c.url.includes("/billets/12799/payment"))).toBe(
+      true,
+    );
+    expect(out).toContain("rejected");
+    expect(out).not.toContain(SECRET);
+    expect(out).not.toContain("00020126");
+  });
+
+  test("an invoice id that is not digits never calls Leaf", async () => {
+    const { impl, calls } = mockFetch(() => ({
+      json: contractsPayload([CONTRACT]),
+    }));
+    const out = (await tool("leaf_second_copy", { fetchImpl: impl }).invoke({
+      contractId: "15",
+      invoiceId: "01",
+      type: "pix",
+    })) as string;
+    expect(out).toContain("digits");
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("leaf admin toolpack — writes and failures", () => {
+  test("a write without confirmation does not call Leaf", async () => {
+    const { impl, calls } = mockFetch(() => ({
+      json: contractsPayload([CONTRACT]),
+    }));
+    for (const name of [
+      "leaf_extend_connection",
+      "leaf_clear_mac",
+      "leaf_disconnect",
+    ]) {
+      const out = (await tool(name, { fetchImpl: impl }).invoke({
+        connectionId: "99",
+        confirmed: false,
+      })) as string;
+      expect(out).toContain("confirmed");
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  test("a confirmed disconnect posts force false for an owned connection", async () => {
+    const { impl, calls } = mockFetch((url, init) => {
+      if (url.includes("/contracts"))
+        return { json: contractsPayload([CONTRACT]) };
+      expect(init.method).toBe("POST");
+      expect(bodyOf(init)).toEqual({ connectionId: 99, force: false });
+      expect(header(init, "x-auth-header")).toBe(SECRET);
+      expect(init.redirect).toBe("error");
+      return { json: { statusCode: 1 } };
+    });
+    const out = (await tool("leaf_disconnect", { fetchImpl: impl }).invoke({
+      connectionId: "99",
+      confirmed: true,
+    })) as string;
+    expect(out).toContain("disconnected");
+    expect(
+      calls.some((c) => c.url.endsWith("/integrations/customers/disconnect")),
+    ).toBe(true);
+    expect(out).not.toContain(SECRET);
+  });
+
+  test("extend without a connection id posts the contract id", async () => {
+    const bodies: unknown[] = [];
+    const { impl, calls } = mockFetch((url, init) => {
+      if (url.includes("/contracts")) {
+        return {
+          json: contractsPayload([
+            {
+              id: 1,
+              name: "Sem conexao",
+              status: "blocked",
+              connectionId: null,
+            },
+          ]),
+        };
+      }
+      bodies.push(bodyOf(init));
+      return {
+        json: {
+          apiVersion: 2,
+          statusCode: 1,
+          detailCode: 0,
+          detailDescription: "Done",
+        },
+      };
+    });
+    const out = (await tool("leaf_extend_connection", {
+      fetchImpl: impl,
+      contactDbId: null,
+    }).invoke({
+      connectionId: "1",
+      confirmed: true,
+      document: "01396884556",
+    })) as string;
+    const posts = calls.filter((c) =>
+      c.url.includes("/integrations/customers/extend"),
+    );
+    expect(posts).toHaveLength(1);
+    expect(new URL(posts[0]?.url ?? "").pathname).toBe(
+      "/api/v2/integrations/customers/extend",
+    );
+    expect(bodies).toEqual([{ contractId: 1 }]);
+    expect(out).toContain("extended");
+    expect(out).not.toContain(SECRET);
+  });
+
+  test("statusCode OK extends the connection", async () => {
+    const { impl, calls } = mockFetch((url) => {
+      if (url.includes("/contracts"))
+        return { json: contractsPayload([CONTRACT]) };
+      return {
+        json: {
+          apiVersion: 2,
+          statusCode: "OK",
+          detailCode: "OK",
+          detailDescription: "Done",
+        },
+      };
+    });
+    const out = (await tool("leaf_extend_connection", {
+      fetchImpl: impl,
+    }).invoke({
+      connectionId: "99",
+      confirmed: true,
+    })) as string;
+    expect(
+      calls.some((c) => c.url.endsWith("/integrations/customers/extend")),
+    ).toBe(true);
+    expect(out).toContain("extended");
+    expect(out).not.toContain("rejected");
+  });
+
+  test("an HTTP 200 business refusal still refuses the extend", async () => {
+    const { impl, calls } = mockFetch((url) => {
+      if (url.includes("/contracts"))
+        return { json: contractsPayload([CONTRACT]) };
+      return {
+        json: { statusCode: 0, detailCode: 20, detailDescription: SECRET },
+      };
+    });
+    const out = (await tool("leaf_extend_connection", {
+      fetchImpl: impl,
+    }).invoke({
+      connectionId: "99",
+      confirmed: true,
+    })) as string;
+    expect(
+      calls.some((c) => c.url.endsWith("/integrations/customers/extend")),
+    ).toBe(true);
+    expect(out).toContain("rejected");
+    expect(out).not.toContain("extended");
+    expect(out).not.toContain(SECRET);
+  });
+
+  test("extend and clear-mac post only the connection id", async () => {
+    const bodies: unknown[] = [];
+    const { impl } = mockFetch((url, init) => {
+      if (url.includes("/contracts"))
+        return { json: contractsPayload([CONTRACT]) };
+      bodies.push(bodyOf(init));
+      return { json: { statusCode: "Ok" } };
+    });
+    await tool("leaf_extend_connection", { fetchImpl: impl }).invoke({
+      connectionId: "99",
+      confirmed: true,
+    });
+    await tool("leaf_clear_mac", { fetchImpl: impl }).invoke({
+      connectionId: "99",
+      confirmed: true,
+    });
+    expect(bodies).toEqual([{ connectionId: 99 }, { connectionId: 99 }]);
+  });
+
+  test("a bad statusCode is not a success and the body is not echoed", async () => {
+    const { impl } = mockFetch(() => ({
+      json: {
+        statusCode: 0,
+        detailDescription: SECRET,
+        results: [{ id: 1, name: "SHOULD_NOT_LEAK_NAME" }],
+      },
+    }));
+    const out = (await tool("leaf_lookup_customer", { fetchImpl: impl }).invoke(
+      {},
+    )) as string;
+    expect(out).toContain("rejected");
+    expect(out).not.toContain(SECRET);
+    expect(out).not.toContain("SHOULD_NOT_LEAK_NAME");
+  });
+
+  test("detailCode 19 and HTTP 403 are invalid credentials", async () => {
+    const forbidden = mockFetch(() => ({
+      status: 200,
+      json: { statusCode: "ERROR", detailCode: 19, detailDescription: SECRET },
+    }));
+    const denied = mockFetch(() => ({
+      status: 403,
+      json: { detailDescription: SECRET },
+    }));
+    const a = (await tool("leaf_lookup_customer", {
+      fetchImpl: forbidden.impl,
+    }).invoke({})) as string;
+    const b = (await tool("leaf_lookup_customer", {
+      fetchImpl: denied.impl,
+    }).invoke({})) as string;
+    expect(a).toContain("credential");
+    expect(b).toContain("credential");
+    expect(a).not.toContain(SECRET);
+    expect(b).not.toContain(SECRET);
+    expect(header(forbidden.calls[0]?.init ?? {}, "x-auth-header")).toBe(
+      SECRET,
+    );
+  });
+
+  test("http and a refused host never send the key", async () => {
+    const http = mockFetch(() => ({ json: { statusCode: 1, results: [] } }));
+    const httpOut = (await tool("leaf_lookup_customer", {
+      fetchImpl: http.impl,
+      resolveCredentialEntry: async () => ({
+        value: SECRET,
+        kind: "leaf_admin",
+        baseUrl: "http://leaf.example.com",
+      }),
+    }).invoke({})) as string;
+    expect(http.calls).toHaveLength(0);
+    expect(httpOut).toContain("https");
+    expect(httpOut).not.toContain(SECRET);
+
+    const blocked = mockFetch(() => ({ json: { statusCode: 1 } }));
+    const blockedOut = (await tool("leaf_lookup_customer", {
+      fetchImpl: blocked.impl,
+      assertSafe: async () => {
+        throw new Error(`blocked ${SECRET}`);
+      },
+    }).invoke({})) as string;
+    expect(blocked.calls).toHaveLength(0);
+    expect(blockedOut).toContain("refused");
+    expect(blockedOut).not.toContain(SECRET);
+  });
+
+  test("a transport error does not repeat the credential", async () => {
+    const { impl } = mockFetch(() => "throw");
+    const out = (await tool("leaf_lookup_customer", { fetchImpl: impl }).invoke(
+      {},
+    )) as string;
+    expect(out).not.toContain(SECRET);
+    expect(out).toContain("Failed to reach");
+  });
+
+  test("a thrown credential read does not repeat the key", async () => {
+    const { impl, calls } = mockFetch(() => ({ json: { statusCode: 1 } }));
+    const out = (await tool("leaf_lookup_customer", {
+      fetchImpl: impl,
+      resolveCredentialEntry: async () => {
+        throw new Error(`vault ${SECRET}`);
+      },
+    }).invoke({})) as string;
+    expect(calls).toHaveLength(0);
+    expect(out).not.toContain(SECRET);
+  });
+
+  test("the model has no phone, url, or token argument", () => {
+    const names = leafAdminToolpack.toolSpecs.flatMap((spec) =>
+      Object.keys(spec.schema.shape),
+    );
+    expect(names).not.toContain("phone");
+    expect(names).toContain("document");
+    expect(names).not.toContain("system_url");
+    expect(names).not.toContain("api_key");
+    expect(names).not.toContain("url");
+  });
+
+  test("trailing slash on system_url is stripped before /api/v2", async () => {
+    const { impl, calls } = mockFetch(() => ({ json: contractsPayload([]) }));
+    await tool("leaf_lookup_customer", {
+      fetchImpl: impl,
+      resolveCredentialEntry: async () => ({
+        value: SECRET,
+        kind: "leaf_admin",
+        baseUrl: "https://leaf.example.com/",
+      }),
+    }).invoke({});
+    expect(calls[0]?.url.startsWith("https://leaf.example.com/api/v2/")).toBe(
+      true,
+    );
+  });
+});
+
+describe("the Leaf Admin credential carries the URL and the token", () => {
+  test("the integration prefers the Leaf Admin secret type, not generic", () => {
+    expect(credentialCompat.catalog("LEAF_ADMIN")).toEqual(["leaf_admin"]);
+  });
+
+  test("an empty URL, http, a slash and /api are refused on the credential", () => {
+    expect(leafSystemUrlProblem("")).toBe("empty");
+    expect(leafSystemUrlProblem("http://leaf.example.com")).toBe("https");
+    expect(leafSystemUrlProblem("https://leaf.example.com/")).toBe("slash");
+    expect(leafSystemUrlProblem("https://leaf.example.com/api")).toBe("api");
+    expect(leafSystemUrlProblem("https://leaf.example.com/api/v2")).toBe("api");
+    expect(leafSystemUrlProblem("https://leaf.example.com")).toBeNull();
+    expect(() =>
+      assertIntegrationWritable("LEAF_ADMIN", { config: {} }),
+    ).not.toThrow();
+    expect(() =>
+      assertIntegrationWritable("LEAF_ADMIN", {
+        config: { system_url: "https://leaf.example.com/" },
+      }),
+    ).toThrow("must not end with a slash");
+  });
+
+  test("a missing URL and a missing token name the field in Portuguese", async () => {
+    const noUrl = (await tool("leaf_lookup_customer", {
+      resolveCredentialEntry: async () => ({
+        value: SECRET,
+        kind: "leaf_admin",
+        baseUrl: null,
+      }),
+    }).invoke({})) as string;
+    expect(noUrl).toContain("URL base do ERP");
+    expect(noUrl).not.toContain(SECRET);
+
+    const noToken = (await tool("leaf_lookup_customer", {
+      resolveCredentialEntry: async () => ({
+        value: "",
+        kind: "leaf_admin",
+        baseUrl: BASE,
+      }),
+    }).invoke({})) as string;
+    expect(noToken).toContain("token");
+    expect(noToken).not.toContain("URL base do ERP");
+
+    const generic = (await tool("leaf_lookup_customer", {
+      resolveCredentialEntry: async () => ({
+        value: SECRET,
+        kind: "generic",
+        baseUrl: BASE,
+      }),
+    }).invoke({})) as string;
+    expect(generic).toContain("tipo Leaf Admin");
+    expect(generic).not.toContain(SECRET);
+  });
+
+  test("the credential write refuses http and a URL that already ends in /api", () => {
+    expect(
+      assertVaultEntryCreatable({
+        name: "Leaf",
+        kind: "leaf_admin",
+        value: "tok",
+        baseUrl: "https://erp.example.com",
+      }).baseUrl,
+    ).toBe("https://erp.example.com");
+    expect(() =>
+      assertVaultEntryCreatable({
+        name: "Leaf",
+        kind: "leaf_admin",
+        value: "tok",
+        baseUrl: "http://erp.example.com",
+      }),
+    ).toThrow("must use https");
+    expect(() =>
+      assertVaultEntryCreatable({
+        name: "Leaf",
+        kind: "leaf_admin",
+        value: "tok",
+        baseUrl: "https://erp.example.com/api",
+      }),
+    ).toThrow("must not end with /api");
+    expect(() =>
+      assertVaultEntryCreatable({
+        name: "Leaf",
+        kind: "leaf_admin",
+        value: "tok",
+      }),
+    ).toThrow("baseUrl is required");
+  });
+});
+
+describe("the connection test calls the saved Leaf Admin", () => {
+  const saved = { system_url: BASE };
+
+  test("a small contract page is enough, and the token stays out of the answer", async () => {
+    const { impl, calls } = mockFetch(() => ({
+      json: {
+        statusCode: 1,
+        results: [{ document: DOCUMENT, phone: PHONE, pppoePassword: SECRET }],
+      },
+    }));
+    const result = await probeLeafAdmin(saved, SECRET, {
+      fetchImpl: impl,
+      assertSafe: async () => new URL(BASE),
+    });
+    expect(calls[0]?.url).toBe(
+      `${BASE}/api/v2/integrations/contracts?page=1&limit=1`,
+    );
+    expect(header(calls[0]?.init ?? {}, "x-auth-header")).toBe(SECRET);
+    expect(result).toEqual({ ok: true, httpStatus: 200, statusCode: "1" });
+    expect(JSON.stringify(result)).not.toContain(SECRET);
+    expect(JSON.stringify(result)).not.toContain(DOCUMENT);
+    expect(JSON.stringify(result)).not.toContain("pppoePassword");
+  });
+
+  test("a rejected credential and a business answer stay codes, not the body", async () => {
+    const rejected = mockFetch(() => ({
+      status: 401,
+      json: { statusCode: 0, detailCode: 19, message: SECRET },
+    }));
+    const answer = await probeLeafAdmin(saved, SECRET, {
+      fetchImpl: rejected.impl,
+      assertSafe: async () => new URL(BASE),
+    });
+    expect(answer).toEqual({
+      ok: false,
+      code: "rejected",
+      httpStatus: 401,
+      statusCode: "0",
+    });
+    expect(JSON.stringify(answer)).not.toContain(SECRET);
+
+    const business = mockFetch(() => ({
+      json: { statusCode: "fail", message: `customer ${DOCUMENT}` },
+    }));
+    const second = await probeLeafAdmin(saved, SECRET, {
+      fetchImpl: business.impl,
+      assertSafe: async () => new URL(BASE),
+    });
+    expect(second).toEqual({
+      ok: false,
+      code: "answered",
+      httpStatus: 200,
+      statusCode: "fail",
+    });
+    expect(JSON.stringify(second)).not.toContain(DOCUMENT);
+  });
+
+  test("an empty URL does not call Leaf", async () => {
+    const { impl, calls } = mockFetch(() => ({ json: {} }));
+    const result = await probeLeafAdmin({ system_url: "" }, SECRET, {
+      fetchImpl: impl,
+      assertSafe: async () => new URL(BASE),
+    });
+    expect(result).toEqual({ ok: false, code: "missing" });
+    expect(calls).toHaveLength(0);
+  });
+});

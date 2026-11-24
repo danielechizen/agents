@@ -37,6 +37,7 @@ import { calendarConfigRangeProblem } from "./calendar-config-ranges";
 import { CATALOG, getCatalogEntry } from "./catalog";
 import { isFetchBackProblem, parseFetchBackConfig } from "./fetch-back";
 import { fetchBackToolProblem } from "./fetch-back-run";
+import { leafSystemUrlProblem } from "./leaf-system-url";
 import { SPREADSHEET_ID_PATTERN } from "./toolpacks/google-sheets";
 import type { CatalogEntry } from "./types";
 
@@ -298,6 +299,34 @@ function assertSheetsConfig(
     );
 }
 
+const LEAF_URL_WHY = {
+  empty: "is required",
+  invalid: "is not a valid URL",
+  https: "must use https",
+  slash: "must not end with a slash",
+  userinfo: "must not include a username or password",
+  query: "must not include a query or fragment",
+  api: "must not end with /api",
+} as const;
+
+function assertLeafSystemUrl(
+  catalogType: string,
+  config: Record<string, unknown>,
+): void {
+  if (catalogType !== "LEAF_ADMIN") return;
+  const raw = config.system_url;
+  if (raw === undefined || raw === null || raw === "") return;
+  const problem = leafSystemUrlProblem(raw);
+  if (!problem || problem === "empty") return;
+  throw new AppError(
+    `config.system_url ${LEAF_URL_WHY[problem]}`,
+    422,
+    "errors.integrationLeafSystemUrl",
+    { field: "config.system_url", problem: LEAF_URL_WHY[problem] },
+    "config.system_url",
+  );
+}
+
 // An inbound route that makes the agent message a customer cannot be left open (GENERIC). Checked
 // on create AND update, since a later PATCH to NONE opens the same door.
 function assertInboundAuthAllowed(
@@ -336,6 +365,7 @@ export function assertIntegrationWritable(
     assertCatalogConfig(catalogType, params.config);
     assertConfigRanges(catalogType, params.config, storedConfig);
     assertSheetsConfig(catalogType, params.config);
+    assertLeafSystemUrl(catalogType, params.config);
   }
   const entry = getCatalogEntry(catalogType);
   assertInboundAuthAllowed(entry, params.inboundAuthStrategy);
@@ -361,7 +391,10 @@ export function assertIntegrationCreatable(
   },
 ): void {
   assertIntegrationWritable(catalogType, params);
-  if (!params.config) assertSheetsConfig(catalogType, {});
+  if (!params.config) {
+    assertSheetsConfig(catalogType, {});
+    assertLeafSystemUrl(catalogType, {});
+  }
 }
 
 // What the audit row carries: identity, policy and shape are PROJECTED, the rest is in

@@ -67,6 +67,18 @@ export const CATALOG: ReadonlyArray<CatalogEntry> = [
     supportsInbound: false,
     defaultInboundAuth: "NONE",
   },
+  {
+    catalogType: "LEAF_ADMIN",
+    label: "Leaf Admin",
+    kind: "TOOLPACK",
+    description:
+      "ERP for internet providers. Looks up the customer, the contract, the invoice and a second copy.",
+    supportsInbound: true,
+    defaultInboundAuth: "STATIC_HEADER",
+    // The provider does not document a signature header. NONE is refused: an open route would
+    // let an unauthenticated POST wake the agent on a customer conversation.
+    requiresInboundAuth: true,
+  },
 ];
 
 const BY_TYPE = new Map(CATALOG.map((e) => [e.catalogType, e]));

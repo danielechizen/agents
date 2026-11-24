@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   isNonInjectableSecret,
   isSecretTypeId,
+  isTestableSecretType,
   resolveSecretInjection,
 } from "@/modules/vault/secret-types";
 
@@ -65,6 +66,13 @@ describe("secret-types catalog", () => {
       name: "api-access-token",
       value: "x",
     });
+    expect(resolveSecretInjection("leaf_admin", "x")).toEqual({
+      target: "header",
+      name: "x-auth-header",
+      value: "x",
+    });
+    expect(isTestableSecretType("leaf_admin")).toBe(true);
+    expect(isTestableSecretType("generic")).toBe(false);
     // Service types ignore any paramName passed (they have a fixed name).
     expect(
       resolveSecretInjection("chatwoot_api_token", "x", "SomeName"),

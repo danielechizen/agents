@@ -1,14 +1,16 @@
 import { Users } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Link, Navigate } from "react-router";
-import { Badge, Card, ProGate, Skeleton } from "@/client/components";
+import { Link, Navigate, useSearchParams } from "react-router";
+import { Badge, Button, Card, Skeleton } from "@/client/components";
+import { useModalController } from "@/client/components/Modal";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
 import { formatDate } from "@/client/lib/utils";
+import { CreateTenantModal } from "./CreateTenantModal";
 
-// Single-tenant Tenants tab: lists the tenant created at /setup, read-only, with an upgrade gate
-// where multi-tenant management would be. Creating and managing multiple tenants requires Pro.
+// Fleet tenant list. A super admin creates another tenant here; each tenant stays isolated by
+// its own id, the scoped client and Postgres RLS.
 type TenantsData = Awaited<
   ReturnType<typeof api.api.admin.tenants.get>
 >["data"];
@@ -19,6 +21,8 @@ const TENANT_SKELETON_KEYS = ["tenant-0", "tenant-1", "tenant-2"];
 export function AdminTenantsPage() {
   const { t } = useTranslation();
   const { user } = useAuth();
+  const [params, setParams] = useSearchParams();
+  const createModal = useModalController();
   const [tenants, setTenants] = useState<TenantRow[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -36,6 +40,14 @@ export function AdminTenantsPage() {
     void fetchTenants();
   }, [fetchTenants]);
 
+  useEffect(() => {
+    if (params.get("create") !== "1") return;
+    createModal.open();
+    const next = new URLSearchParams(params);
+    next.delete("create");
+    setParams(next, { replace: true });
+  }, [params, setParams, createModal.open]);
+
   // The Tenants tab is fleet-level; a tenant admin has no business here.
   if (user && user.role !== "SUPER_ADMIN") {
     return <Navigate to="/admin/users" replace />;
@@ -44,11 +56,14 @@ export function AdminTenantsPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-end">
-        <ProGate
-          feature="multiTenant"
-          triggerLabel={t("admin.createTenant", "Create tenant")}
-        />
+        <Button onClick={() => createModal.open()}>
+          {t("admin.createTenant", "Create tenant")}
+        </Button>
       </div>
+      <CreateTenantModal
+        modal={createModal}
+        onCreated={() => void fetchTenants()}
+      />
 
       <Card>
         {loading ? (

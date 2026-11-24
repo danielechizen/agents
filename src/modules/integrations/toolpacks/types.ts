@@ -36,6 +36,13 @@ export interface ToolpackCtx {
   contactDbId?: bigint | null;
   // Resolves a vault secret by reference (short scoped DB read; no network).
   resolveCredential: (ref: string) => Promise<string | null>;
+  // The same entry with its kind and base URL. Leaf Admin reads the ERP root and the
+  // token from here. Absent ⇒ the pack resolves the entry itself.
+  resolveCredentialEntry?: (ref: string) => Promise<{
+    value: string;
+    kind: string | null;
+    baseUrl: string | null;
+  } | null>;
   // The contact's own address, for the one pack that writes to an address instead of into the
   // conversation. A column rather than one of the attribute bags, so `contactDbId` cannot answer
   // it. Absent or null ⇒ the pack fails closed, like the Calendar stamp.

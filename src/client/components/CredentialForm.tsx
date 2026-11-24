@@ -40,10 +40,43 @@ import {
 } from "@/client/lib/secretTypes";
 import { cn } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
+import {
+  type LeafSystemUrlProblem,
+  leafSystemUrlProblem,
+} from "@/modules/integrations/leaf-system-url";
 
 // Trim, 1..128 chars, no control characters (mirrors server validation).
 // biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally matches control chars to reject them
 const NAME_RE = /^[^\x00-\x1f\x7f]{1,128}$/;
+
+function leafBaseError(
+  t: (key: string, fallback: string) => string,
+  problem: LeafSystemUrlProblem,
+): string {
+  switch (problem) {
+    case "https":
+      return t("vault.leafSystemUrlHttps", "The URL must use https.");
+    case "slash":
+      return t(
+        "vault.leafSystemUrlSlash",
+        "The URL must not end with a slash.",
+      );
+    case "api":
+      return t("vault.leafSystemUrlApi", "The URL must not end with /api.");
+    case "userinfo":
+      return t(
+        "vault.leafSystemUrlUserinfo",
+        "The URL must not include a username or password.",
+      );
+    case "query":
+      return t(
+        "vault.leafSystemUrlQuery",
+        "The URL must not include a query or a fragment.",
+      );
+    default:
+      return t("vault.leafSystemUrlInvalid", "The URL is not valid.");
+  }
+}
 
 // Per-secret-type label. Magic comments register the dynamic keys for the extractor (also declared
 // in VaultPanel for its list badge; duplicate declarations are deduped).
@@ -63,6 +96,7 @@ const NAME_RE = /^[^\x00-\x1f\x7f]{1,128}$/;
 // t('vault.secretType.elevenlabs', 'ElevenLabs')
 // t('vault.secretType.asaas', 'Asaas')
 // t('vault.secretType.resend', 'Resend')
+// t('vault.secretType.leaf_admin', 'Leaf Admin')
 // t('vault.secretType.langfuse', 'Langfuse')
 // t('vault.secretType.google_oauth', 'Google OAuth2')
 // t('vault.secretType.mcp_oauth', 'MCP OAuth2')
@@ -249,7 +283,18 @@ export function CredentialForm({
   // rename alone is a valid save. The type is locked once created.
   const paramNameMissing = needsParamName && !paramName.trim();
   const baseUrlMissing = requiresBaseUrl && !baseUrl.trim();
-  const baseUrlInvalid = supportsBaseUrl && !isValidHttpUrl(baseUrl);
+  const leafProblem =
+    kind === "leaf_admin" && baseUrl.trim()
+      ? leafSystemUrlProblem(baseUrl.trim())
+      : null;
+  const baseUrlInvalid =
+    kind === "leaf_admin"
+      ? leafProblem !== null && leafProblem !== "empty"
+      : supportsBaseUrl && !isValidHttpUrl(baseUrl);
+  const leafUrlError =
+    leafProblem && leafProblem !== "empty" && baseUrlTouched
+      ? leafBaseError(t, leafProblem)
+      : null;
   const partialFields = hasFields && anyFieldFilled && !allFieldsFilled;
   const paramNameChanged =
     isUpdate && paramName.trim() !== (initialParamName ?? "");
@@ -934,29 +979,43 @@ export function CredentialForm({
 
       {supportsBaseUrl && !langfusePaste && (
         <FormField
-          label={t("vault.baseUrl", "Base URL")}
+          label={
+            kind === "leaf_admin"
+              ? t("vault.leafSystemUrl", "ERP base URL")
+              : t("vault.baseUrl", "Base URL")
+          }
           required={requiresBaseUrl}
           description={
-            kind === "langfuse"
-              ? t("vault.baseUrlHintLangfuse", "Enter your Langfuse host URL.")
-              : kind === "mcp_oauth"
+            kind === "leaf_admin"
+              ? t(
+                  "vault.leafSystemUrlHint",
+                  "https, with no /api at the end. The client adds /api/v2.",
+                )
+              : kind === "langfuse"
                 ? t(
-                    "vault.baseUrlHintMcp",
-                    "The MCP server URL. Its OAuth configuration is discovered automatically.",
+                    "vault.baseUrlHintLangfuse",
+                    "Enter your Langfuse host URL.",
                   )
-                : requiresBaseUrl
-                  ? undefined
-                  : t(
-                      "vault.baseUrlHint",
-                      "Used as the base for requests and connection tests. Optional.",
+                : kind === "mcp_oauth"
+                  ? t(
+                      "vault.baseUrlHintMcp",
+                      "The MCP server URL. Its OAuth configuration is discovered automatically.",
                     )
+                  : requiresBaseUrl
+                    ? undefined
+                    : t(
+                        "vault.baseUrlHint",
+                        "Used as the base for requests and connection tests. Optional.",
+                      )
           }
           error={
-            baseUrlMissing && baseUrlTouched
-              ? t("vault.baseUrlRequired", "Base URL is required.")
-              : baseUrlInvalid && baseUrl.trim()
-                ? t("common.invalidUrl", "Must be a valid http(s) URL.")
-                : refusal.at("baseUrl", baseUrl.trim() || null)
+            leafUrlError
+              ? leafUrlError
+              : baseUrlMissing && baseUrlTouched
+                ? t("vault.baseUrlRequired", "Base URL is required.")
+                : baseUrlInvalid && baseUrl.trim()
+                  ? t("common.invalidUrl", "Must be a valid http(s) URL.")
+                  : refusal.at("baseUrl", baseUrl.trim() || null)
           }
         >
           <Input
@@ -967,13 +1026,15 @@ export function CredentialForm({
             }}
             onBlur={() => setBaseUrlTouched(true)}
             placeholder={
-              kind === "langfuse"
-                ? "https://cloud.langfuse.com"
-                : kind === "mcp_oauth"
-                  ? "https://servidor.exemplo.com/mcp"
-                  : kind === "typesafe"
-                    ? "https://api.typesafe.ai/v1"
-                    : "https://api.exemplo.com"
+              kind === "leaf_admin"
+                ? "https://erp.example.com"
+                : kind === "langfuse"
+                  ? "https://cloud.langfuse.com"
+                  : kind === "mcp_oauth"
+                    ? "https://servidor.exemplo.com/mcp"
+                    : kind === "typesafe"
+                      ? "https://api.typesafe.ai/v1"
+                      : "https://api.exemplo.com"
             }
           />
         </FormField>
@@ -1080,7 +1141,11 @@ export function CredentialForm({
         ) : (
           // Plain string value for all other types.
           <FormField
-            label={t("vault.value", "Value")}
+            label={
+              kind === "leaf_admin"
+                ? t("vault.leafToken", "Token")
+                : t("vault.value", "Value")
+            }
             description={
               isUpdate
                 ? t(

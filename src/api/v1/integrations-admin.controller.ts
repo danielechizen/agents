@@ -60,6 +60,7 @@ function inboundUrlOf(routeToken: string | null): string | null {
 // translate('errors.integrationConfigOutOfRange', '"{{field}}" must be between {{min}} and {{max}}.')
 // translate('errors.integrationSheetsConfigInvalid', '"{{field}}" must be the spreadsheet id or the numeric tab id, not a URL or a tab name. Pick the spreadsheet and the tab again in the integration settings.')
 // translate('errors.integrationSheetsConfigMissing', '"{{field}}" is missing. Choose the spreadsheet and the tab in the integration settings.')
+// translate('errors.integrationLeafSystemUrl', 'The ERP base URL ({{field}}) {{problem}}.')
 // translate('errors.integrationNoInboundWebhook', 'The {{integration}} integration has no inbound webhook.')
 // translate('errors.invalidCredentialRef', 'The credential reference is not valid.')
 

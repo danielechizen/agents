@@ -322,6 +322,7 @@ describe("buildAuthorizationRequest", () => {
       value: "sk-1",
       kind,
       paramName,
+      baseUrl: null,
     });
     expect(check(init.headers as Record<string, string>, url)).toBe(true);
   });

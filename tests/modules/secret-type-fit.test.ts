@@ -32,6 +32,7 @@ const TABLE: [string, boolean, boolean][] = [
   ["elevenlabs", true, true],
   ["asaas", true, true],
   ["resend", true, true],
+  ["leaf_admin", true, true],
   ["chatwoot_api_token", true, true],
   // A plain string that is never a key: `user:password` base64-encoded, sent as `Authorization:
   // Basic`. Injectable, because that header is a real way to authenticate a call; never an API key,

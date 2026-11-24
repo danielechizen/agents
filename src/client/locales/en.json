@@ -3368,6 +3368,11 @@
         "hint": "Adds, finds and updates rows in one spreadsheet tab.",
         "label": "Google Sheets"
       },
+      "LEAF_ADMIN": {
+        "description": "ERP for internet providers. Looks up the customer, the contract, the invoice and a second copy.",
+        "hint": "Customer, contract, invoice and a second copy.",
+        "label": "Leaf Admin"
+      },
       "RESEND": {
         "description": "Transactional email over a Resend API key. The agent sends confirmations, reminders and follow-ups; the sender address is fixed in the settings below.",
         "hint": "Transactional email from a fixed sender address.",
@@ -3419,6 +3424,7 @@
       "minutesPlaceholder": "Minutes",
       "noFoldersMatch": "No folders match your filter.",
       "noFoldersScopeHint": "No folders found. Accounts connected with \"Drive (app files)\" only see files created by this app; reconnect with \"Drive (read-only)\" or \"Drive (full access)\".",
+      "notifyOnInvoicePaid": "Wake the agent when an invoice is paid",
       "notifyOnPayment": "Wake the agent when a payment is confirmed",
       "remindersAdd": "Add reminder",
       "remindersAmount": "Amount",
@@ -3493,6 +3499,11 @@
       "TOOLPACK": "Tools",
       "WEBHOOK": "Inbound webhook"
     },
+    "leafCredentialHint": "The ERP base URL and the token live on a Leaf Admin credential. Test connection is on that credential, and it stays off a generic one.",
+    "leafLookupDocument": "If the phone matches nothing, the CPF/CNPJ is sent only when the contact already has the cpf_cnpj attribute, as the document parameter. When the contact has no such attribute, or the conversation has no contact, the tool accepts the CPF/CNPJ the customer stated (11 or 14 digits) and sends it as document.",
+    "leafLookupIds": "The contract and the connectionId used afterwards are the ones that search returned.",
+    "leafLookupPhone": "The lookup starts with the Chatwoot contact's phone, the phone parameter on GET /integrations/contracts, only when the contact exists. The model does not supply the phone, the URL, the token or an id.",
+    "leafLookupTitle": "How the lookup finds the customer",
     "loadError": "Could not load this integration.",
     "name": "Name",
     "saved": "Integration saved.",
@@ -3566,6 +3577,7 @@
     "webhook": {
       "explain": "After saving, paste the URL into Asaas; when a charge is paid, the agent resumes its conversation and decides whether to reply.",
       "explainGeneric": "After saving, give this URL and its secret to your system. An HTTP tool that sends {{ref}} hands your system a reference to the conversation; your system then POSTs events with that reference here, and the agent passes each one on to the customer (or leaves a private note when a person holds the conversation). A payment gateway that notifies with only the payment id, such as Mercado Pago, uses the same webhook: paste this URL into the gateway's dashboard, and set its signature and the payment lookup below.",
+      "explainLeaf": "After saving, paste the URL into Leaf Admin. When an invoice is paid, the agent resumes that conversation.",
       "rotate": "Generate new URL",
       "rotateConfirm": "Generate",
       "rotateError": "Could not generate.",
@@ -3573,6 +3585,7 @@
       "rotateTitle": "Generate a new URL",
       "title": "Payment webhook",
       "titleGeneric": "Incoming webhook",
+      "titleLeaf": "Paid invoice",
       "url": "Webhook URL",
       "urlHint": "Paste this into the provider's panel.",
       "urlMissing": "This integration was created before the URL could be shown again, so we no longer have it. Generate a new one and update it in the provider's panel.",
@@ -4931,6 +4944,7 @@
   },
   "tenant": {
     "create": "Create tenant",
+    "createFailed": "Could not create the tenant.",
     "deepLinkUnavailable": "This link points at a tenant you cannot open. Nothing was switched.",
     "deepLinkUnverified": "Could not check this link",
     "deepLinkUnverifiedHelp": "This link opens a different tenant, and the list of tenants you can open could not be read. Nothing was switched.",
@@ -4938,8 +4952,11 @@
     "label": "Tenant",
     "name": "Name",
     "none": "No tenants yet.",
+    "required": "Name and slug are required.",
     "select": "Select tenant",
     "slug": "Slug",
+    "slugHint": "Lowercase letters, digits and hyphens. It identifies the tenant and does not change later.",
+    "slugInUse": "This slug is already in use.",
     "switcher": "Switch tenant"
   },
   "testMode": {
@@ -5047,6 +5064,34 @@
     "drive_send_file": {
       "desc": "Send a Drive file to the customer as an attachment.",
       "label": "Send file"
+    },
+    "leaf_clear_mac": {
+      "desc": "Clear the connection MAC after the customer agrees.",
+      "label": "Clear MAC"
+    },
+    "leaf_connection_status": {
+      "desc": "Connection status for a contract this conversation found.",
+      "label": "Connection"
+    },
+    "leaf_disconnect": {
+      "desc": "Disconnect the customer after they agree.",
+      "label": "Disconnect"
+    },
+    "leaf_extend_connection": {
+      "desc": "Extend the connection after the customer agrees.",
+      "label": "Extend"
+    },
+    "leaf_lookup_customer": {
+      "desc": "Look up the customer and their contracts.",
+      "label": "Customer"
+    },
+    "leaf_open_invoices": {
+      "desc": "Open and overdue invoices for a contract.",
+      "label": "Invoices"
+    },
+    "leaf_second_copy": {
+      "desc": "PIX, boleto or card second copy of an invoice.",
+      "label": "Second copy"
     },
     "resend_email_status": {
       "desc": "Check whether an email sent with Send email was delivered or bounced.",
@@ -5357,6 +5402,15 @@
     "langfuseManualFields": "Fill fields manually",
     "langfuseManualHint": "Fill each field by hand.",
     "langfusePasteEnv": "Paste .env",
+    "leafSystemUrl": "ERP base URL",
+    "leafSystemUrlApi": "The URL must not end with /api.",
+    "leafSystemUrlHint": "https, with no /api at the end. The client adds /api/v2.",
+    "leafSystemUrlHttps": "The URL must use https.",
+    "leafSystemUrlInvalid": "The URL is not valid.",
+    "leafSystemUrlQuery": "The URL must not include a query or a fragment.",
+    "leafSystemUrlSlash": "The URL must not end with a slash.",
+    "leafSystemUrlUserinfo": "The URL must not include a username or password.",
+    "leafToken": "Token",
     "mcpOAuth": {
       "authFailed": "Authorization failed: {{message}}",
       "connect": "Connect",
@@ -5414,6 +5468,7 @@
       "google_oauth": "Google OAuth2",
       "header": "Header",
       "langfuse": "Langfuse",
+      "leaf_admin": "Leaf Admin",
       "mcp_env": "MCP env var",
       "mcp_oauth": "MCP OAuth2",
       "openai": "OpenAI",

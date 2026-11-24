@@ -1,9 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { sanitizeBranding } from "@/lib/branding";
 
-// NOTE: The scoped-write cases moved to tenants-admin.test.ts, which the Free tree drops: they
-// exercise tenants.admin.service, a paired file that is a ProEditionError stub there. What lives
-// here is the branding sanitizer, which is identical in every edition.
+// Branding sanitizer. Tenant create, rename and delete live in tenants.admin.service.
 
 describe("sanitizeBranding (server-side)", () => {
   test("keeps allowlisted keys with valid color tokens", () => {

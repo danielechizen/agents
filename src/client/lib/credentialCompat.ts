@@ -49,6 +49,7 @@ const CATALOG_TYPE_TYPE: Record<string, string> = {
   GOOGLE_CALENDAR: "google_oauth",
   GOOGLE_DRIVE: "google_oauth",
   GOOGLE_SHEETS: "google_oauth",
+  LEAF_ADMIN: "leaf_admin",
   RESEND: "resend",
 };
 

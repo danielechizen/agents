@@ -1,4 +1,7 @@
+import logger from "@/api/lib/logger";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
+import { clipText } from "@/lib/text";
+import { fetchDespiteExpiredCertificate } from "@/modules/integrations/leaf-tls";
 import {
   getSecretType,
   resolveSecretInjection,
@@ -47,6 +50,57 @@ export interface SecretTestDeps {
   assertSafe?: (url: string) => Promise<URL>;
 }
 
+function leafLogText(value: unknown, secret: string): string {
+  const text =
+    value instanceof Error
+      ? value.message
+      : typeof value === "string"
+        ? value
+        : "";
+  return secret ? text.split(secret).join("") : text;
+}
+
+async function readProbeBody(res: Response): Promise<string> {
+  try {
+    return clipText(await res.text(), 2_000);
+  } catch {
+    return "";
+  }
+}
+
+function leafAccepted(statusCode: unknown): boolean {
+  if (statusCode === 1) return true;
+  return (
+    typeof statusCode === "string" &&
+    ["1", "ok"].includes(statusCode.trim().toLowerCase())
+  );
+}
+
+function leafVerdict(
+  status: number,
+  body: string,
+): Extract<SecretTestResult, { testable: true }> {
+  let parsed: { statusCode?: unknown; detailCode?: unknown } | null = null;
+  try {
+    parsed = JSON.parse(body) as { statusCode?: unknown; detailCode?: unknown };
+  } catch {
+    parsed = null;
+  }
+  if (status >= 200 && status < 300 && leafAccepted(parsed?.statusCode)) {
+    return { testable: true, ok: true };
+  }
+  const detail = String(parsed?.detailCode ?? "")
+    .trim()
+    .toLowerCase();
+  if (status === 401 || detail === "bad_token") {
+    return { testable: true, ok: false, code: "unauthorized", status };
+  }
+  if (status === 403 || detail === "forbidden") {
+    return { testable: true, ok: false, code: "forbidden", status };
+  }
+  return { testable: true, ok: false, code: "http_error", status };
+}
+
 async function probe(
   rawBase: string,
   spec: SecretTestSpec,
@@ -85,21 +139,55 @@ async function probe(
     return { testable: true, ok: false, code: "blocked_url" };
   }
 
+  const init: RequestInit = {
+    method: "GET",
+    headers,
+    redirect: "error",
+    signal: AbortSignal.timeout(TEST_TIMEOUT_MS),
+  };
+  const send =
+    type.id === "leaf_admin"
+      ? (input: Parameters<typeof fetch>[0], next?: RequestInit) =>
+          fetchDespiteExpiredCertificate(fetchImpl, input, next)
+      : fetchImpl;
+
   let res: Response;
   try {
-    res = await fetchImpl(url, {
-      method: "GET",
-      headers,
-      redirect: "error",
-      signal: AbortSignal.timeout(TEST_TIMEOUT_MS),
-    });
+    res = await send(url, init);
   } catch (err) {
+    if (type.id === "leaf_admin") {
+      logger.info(
+        {
+          method: "GET",
+          url,
+          error: clipText(leafLogText(err, value), 240),
+        },
+        "leaf-admin: credential test",
+      );
+    }
     const name = err instanceof Error ? err.name : "";
     const code =
       name === "TimeoutError" || name === "AbortError"
         ? "timeout"
         : "unreachable";
     return { testable: true, ok: false, code };
+  }
+
+  if (type.id === "leaf_admin") {
+    const body = await readProbeBody(res);
+    const verdict = leafVerdict(res.status, body);
+    logger.info(
+      {
+        method: "GET",
+        url,
+        status: res.status,
+        ...(verdict.ok
+          ? {}
+          : { error: clipText(leafLogText(body, value), 240) }),
+      },
+      "leaf-admin: credential test",
+    );
+    return verdict;
   }
 
   if (res.ok) return { testable: true, ok: true };

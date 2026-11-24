@@ -96,6 +96,7 @@ const CLIENT_IDENTICAL_BY_DESIGN: readonly string[] = [
   "integrations.catalog.GOOGLE_CALENDAR.label",
   "integrations.catalog.GOOGLE_DRIVE.label",
   "integrations.catalog.GOOGLE_SHEETS.label",
+  "integrations.catalog.LEAF_ADMIN.label",
   "integrations.catalog.RESEND.label",
   "mcp.admin.clientNamePlaceholder",
   "nav.dashboards",
@@ -118,6 +119,7 @@ const CLIENT_IDENTICAL_BY_DESIGN: readonly string[] = [
   "vault.secretType.gemini",
   "vault.secretType.google_oauth",
   "vault.secretType.langfuse",
+  "vault.secretType.leaf_admin",
   "vault.secretType.openai",
   "vault.secretType.openrouter",
   "vault.secretType.resend",
@@ -922,7 +924,7 @@ describe("both languages answer, and answer differently", () => {
       CLIENT_IDENTICAL_BY_DESIGN,
       // A brand name reads the same in both languages, like every `vault.secretType.*` waived above.
       // Plus the Dashboards feature's name, in the menu and on its page, in both editions.
-      hasProOnlyKeys ? 113 : 111,
+      hasProOnlyKeys ? 115 : 113,
     );
     // NOTE: the same in every edition, since the list is empty in every tree.
     expectWaiverLedger("SAY_LESS_GRANDFATHERED", SAY_LESS_GRANDFATHERED, 0);

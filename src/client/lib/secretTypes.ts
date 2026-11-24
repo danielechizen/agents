@@ -20,6 +20,7 @@ export const SECRET_TYPE_IDS = [
   "elevenlabs",
   "asaas",
   "resend",
+  "leaf_admin",
   "chatwoot_api_token",
   "langfuse",
   "google_oauth",
@@ -73,6 +74,13 @@ export const SECRET_TYPE_META: Record<SecretTypeId, SecretTypeMeta> = {
   elevenlabs: { service: "elevenlabs", testable: true },
   asaas: { service: "asaas", testable: true },
   resend: { service: "resend", testable: true },
+  leaf_admin: {
+    service: "leaf_admin",
+    testable: true,
+    needsBase: true,
+    supportsBaseUrl: true,
+    requiresBaseUrl: true,
+  },
   chatwoot_api_token: {
     service: "chatwoot",
     testable: true,

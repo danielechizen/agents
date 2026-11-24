@@ -37,6 +37,7 @@ import {
 // translate('errors.vaultFieldRequired', 'The "{{field}}" field must not be empty')
 // translate('errors.vaultFieldUnknown', 'This credential type has no field called "{{field}}"')
 // translate('errors.vaultBaseUrlRequired', 'This credential type requires a base URL.')
+// translate('errors.vaultLeafBaseUrl', 'The ERP base URL {{problem}}.')
 // translate('errors.vaultBaseUrlNotApplicable', 'The "{{kind}}" credential type does not use a base URL. The types that do are: {{kinds}}.')
 // translate('errors.vaultNameInUse', 'A secret with this name and type already exists')
 // translate('errors.vaultParamNameRequired', 'Param name is required for this credential type')

@@ -4,11 +4,7 @@ import type { PrismaClient as PrismaClientType } from "@/../generated/prisma/cli
 import { PrismaClient } from "@/../generated/prisma/client";
 import { createTenant } from "@/api/v1/tenants.admin.service";
 import { listTenants } from "@/api/v1/tenants.service";
-import {
-  ActiveTenantNotFoundError,
-  AppError,
-  ProEditionError,
-} from "@/lib/errors";
+import { ActiveTenantNotFoundError, AppError } from "@/lib/errors";
 import { resolveRequestTenantContext, type TenantContext } from "@/lib/tenancy";
 import { issueDocument } from "@/modules/documents/issue";
 import {
@@ -355,9 +351,8 @@ describe.skipIf(!dbUp)("a fleet route answers a dead selector", () => {
     expect(ids).not.toContain(String(deadId));
   });
 
-  // Either edition's answer, because this file ships to both: the derivation swaps
-  // `tenants.admin.service` for a stub that refuses with `ProEditionError` in Free, and Pro creates
-  // the row. Anything else is the selector, or something broken, answering.
+  // A dead selector must not become a 404 here: create runs as the fleet role and never
+  // looks the header's tenant up. The row is the proof.
   test("creating a tenant never refuses the selector", async () => {
     const slug = `selsweep-fleet-${process.pid}`;
     const err = await createTenant(
@@ -372,11 +367,8 @@ describe.skipIf(!dbUp)("a fleet route answers a dead selector", () => {
         where: { slug },
         select: { name: true },
       });
-      expect([
-        err === null && created?.name === "SelSweepFleet",
-        err instanceof ProEditionError,
-      ]).toContain(true);
-      expect(err instanceof ActiveTenantNotFoundError).toBe(false);
+      expect(err).toBeNull();
+      expect(created?.name).toBe("SelSweepFleet");
     } finally {
       await suDb.tenant.deleteMany({ where: { slug } });
     }
