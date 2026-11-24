@@ -40,7 +40,7 @@ A listagem de contratos pede `limit=50`, no máximo 20 páginas, e para quando `
 | `leaf_connection_status` | `GET /integrations/customers?connectionId=&limit=1` |
 | `leaf_open_invoices` | `GET /integrations/billets?contractId=&status=delayed&limit=5` |
 | `leaf_second_copy` | `GET /integrations/billets/{id}/payment?type=pix\|bankSlip\|creditCard` |
-| `leaf_extend_connection` | `POST /integrations/customers/extend` `{connectionId}` |
+| `leaf_extend_connection` | `POST /integrations/customers/extend` com `{connectionId}` ou, se o contrato não tem conexão, `{contractId}` |
 | `leaf_clear_mac` | `POST /integrations/customers/clear-mac` `{connectionId}` |
 | `leaf_disconnect` | `POST /integrations/customers/disconnect` `{connectionId, force: false}` |
 
@@ -48,13 +48,15 @@ O `id` da segunda via é só dígitos, sem zero à esquerda. `type` na query é 
 
 `pppoePassword` não volta para o modelo, nem aninhado. A leitura de conexão devolve status, `pppoeLogin`, GPON (`status`, `rxPower`, `alarm`) e a mensagem de `auth`.
 
-PIX: `copyPaste` e `qr` (se `qr` não vier, lê `qrCode`, que é o nome no adaptador do Leaf Agent). Um QR maior que 4000 caracteres não entra no texto da ferramenta; a linha copia-e-cola sim.
+PIX: `copyPaste` e `qrCode` (se `qrCode` não vier, lê `qr`). HTTP 200 com um dos dois é sucesso, mesmo quando `statusCode` não é `1`. Sem esses campos, HTTP 200 com `statusCode` `0` continua recusa e o corpo não volta ao modelo. Um QR maior que 4000 caracteres não entra no texto da ferramenta; a linha copia-e-cola sim.
 
 Boleto: `pdf` (base64) e `url`. Com uma conversa ao vivo, o PDF sai pelo anexo que o cliente Chatwoot já tem (`sendFileAttachment`), nome `boleto-{id}.pdf`. A URL volta na resposta da ferramenta. Sem conversa (playground) ou se o envio falhar, a ferramenta devolve a URL e diz que o PDF não foi anexado — não há um transporte novo. Cartão: `url`, ou `params.url` se a primeira não vier.
 
 ## Escrita
 
 `confirmed` é obrigatório. `true` só depois que o cliente concordou nesta conversa. `false` recusa e não chama o Leaf. `force` no disconnect é sempre `false`; o modelo não liga isso.
+
+A prorrogação manda só um id, inteiro. Com `connectionId` na busca, o corpo é `{ "connectionId": <id> }`. Sem `connectionId` no contrato, o corpo é `{ "contractId": <id> }`, o id do contrato dessa busca. Os dois juntos não são enviados. Sucesso é HTTP 200 e `statusCode` `1` (ou `"ok"`). HTTP 200 com `statusCode` `0` é recusa de negócio.
 
 ## Webhook `INVOICE_PAID`
 

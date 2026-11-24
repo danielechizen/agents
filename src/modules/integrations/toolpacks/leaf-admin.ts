@@ -212,6 +212,7 @@ async function leafRequest(
     query?: Record<string, string | number | boolean>;
     body?: unknown;
     cap?: number;
+    acceptPayload?: (record: Record<string, unknown>) => boolean;
   },
 ): Promise<{ ok: true; body: Record<string, unknown> } | LeafNo> {
   const url = leafUrl(ready.base, path, init.query);
@@ -287,7 +288,7 @@ async function leafRequest(
     status >= 200 &&
     status < 300 &&
     record &&
-    successStatus(record.statusCode)
+    (successStatus(record.statusCode) || init.acceptPayload?.(record) === true)
   ) {
     return { ok: true, body: record };
   }
@@ -825,6 +826,21 @@ const SECOND_COPY_SCHEMA = z.object({
     .enum(["pix", "boleto", "card"])
     .describe("How the customer asked to pay: pix, boleto, or card."),
 });
+const EXTEND_SCHEMA = z.object({
+  connectionId: z
+    .string()
+    .min(1)
+    .max(128)
+    .describe(
+      "connectionId from leaf_lookup_customer. When that contract has no connectionId, pass its contract id here; the call sends contractId and does not send connectionId.",
+    ),
+  confirmed: z
+    .boolean()
+    .describe(
+      "True only after the customer explicitly agreed to this change in the conversation. false refuses the call and nothing is sent.",
+    ),
+  document: STATED_DOCUMENT,
+});
 const WRITE_SCHEMA = z.object({
   connectionId: z
     .string()
@@ -846,7 +862,7 @@ const LEAF_TOOL_SPECS: ToolSpec[] = [
   { name: "leaf_connection_status", schema: CONNECTION_SCHEMA },
   { name: "leaf_open_invoices", schema: CONTRACT_SCHEMA },
   { name: "leaf_second_copy", schema: SECOND_COPY_SCHEMA },
-  { name: "leaf_extend_connection", schema: WRITE_SCHEMA },
+  { name: "leaf_extend_connection", schema: EXTEND_SCHEMA },
   { name: "leaf_clear_mac", schema: WRITE_SCHEMA },
   { name: "leaf_disconnect", schema: WRITE_SCHEMA },
 ];
@@ -969,6 +985,48 @@ function buildInvoicesTool(
   );
 }
 
+// A PIX payment is the copy-paste line, the QR, or both. statusCode on that
+// HTTP 200 is not the signal: 0 and 2 are the envelope's error and warning.
+function pixPayload(record: Record<string, unknown>): boolean {
+  return (
+    rawText(record.copyPaste) != null ||
+    rawText(record.qr) != null ||
+    rawText(record.qrCode) != null
+  );
+}
+
+function leafInteger(value: unknown): number | null {
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  const raw = text(value);
+  if (!raw || !/^[1-9]\d*$/.test(raw)) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+function extendBody(
+  rows: OwnedContract[],
+  asked: string,
+): { connectionId: number } | { contractId: number } | null {
+  const wanted = asked.trim();
+  const owned = byConnectionId(rows, wanted);
+  if (owned?.connectionId) {
+    const connectionId =
+      leafInteger(owned.connectionValue) ?? leafInteger(owned.connectionId);
+    return connectionId == null ? null : { connectionId };
+  }
+  const byId = byContractId(rows, wanted);
+  const bare = rows.filter((row) => row.connectionId == null);
+  const chosen = byId ?? (bare.length === 1 ? bare[0] : null);
+  if (!chosen) return null;
+  if (chosen.connectionId) {
+    const connectionId =
+      leafInteger(chosen.connectionValue) ?? leafInteger(chosen.connectionId);
+    return connectionId == null ? null : { connectionId };
+  }
+  const contractId = leafInteger(chosen.id);
+  return contractId == null ? null : { contractId };
+}
+
 async function renderPayment(
   ready: Ready,
   ctx: ToolpackCtx,
@@ -979,7 +1037,7 @@ async function renderPayment(
   if (type === "pix") {
     const copyPaste = rawText(body.copyPaste);
     const qr = rawText(body.qr) ?? rawText(body.qrCode);
-    if (!copyPaste) {
+    if (!copyPaste && !qr) {
       return fail(
         ready.token,
         "Leaf Admin did not return a PIX copy-paste code.",
@@ -987,11 +1045,15 @@ async function renderPayment(
     }
     const qrLine =
       qr && qr.length <= QR_MAX
-        ? `\nQR: ${qr}`
+        ? `QR: ${qr}`
         : qr
-          ? "\nQR image omitted (too large). The copy-paste line is complete."
+          ? "QR image omitted (too large)."
           : "";
-    return say(ready.token, `PIX copy-paste: ${copyPaste}${qrLine}`);
+    const copyLine = copyPaste ? `PIX copy-paste: ${copyPaste}` : "";
+    return say(
+      ready.token,
+      [copyLine, qrLine].filter((line) => line.length > 0).join("\n"),
+    );
   }
   if (type === "card") {
     const params = asRecord(body.params);
@@ -1093,6 +1155,7 @@ function buildSecondCopyTool(
           method: "GET",
           query: { type: PAYMENT_QUERY[input.type] },
           cap: PAYMENT_CAP,
+          ...(input.type === "pix" ? { acceptPayload: pixPayload } : {}),
         },
       );
       if (!paid.ok) return paid.failure;
@@ -1158,6 +1221,46 @@ function buildWriteTool(
   );
 }
 
+function buildExtendTool(
+  sel: IntegrationSelection,
+  ctx: ToolpackCtx,
+): StructuredToolInterface {
+  return failableTool(
+    async (input: {
+      connectionId: string;
+      confirmed: boolean;
+      document?: string;
+    }) => {
+      if (input.confirmed !== true) return toolFailure(CONFIRM_REFUSAL);
+      const ready = await prepare(sel, ctx);
+      if (!ready.ok) return ready.failure;
+      const found = await findContracts(ready, ctx, input.document);
+      if (!found.ok) return found.failure;
+      const body = extendBody(found.contracts, input.connectionId);
+      if (!body) {
+        return fail(
+          ready.token,
+          "That connection was not returned for this contact.",
+        );
+      }
+      const res = await leafRequest(
+        ready,
+        ctx,
+        "/integrations/customers/extend",
+        { method: "POST", body },
+      );
+      if (!res.ok) return res.failure;
+      return say(ready.token, "The connection was extended.");
+    },
+    {
+      name: "leaf_extend_connection",
+      description:
+        "Extend (unblock) a contract after the customer confirms. Pass the connectionId leaf_lookup_customer returned. When that contract has no connectionId, pass its contract id in connectionId; the POST then sends contractId and omits connectionId. Set confirmed to true only after they agree; false refuses and sends nothing.",
+      schema: EXTEND_SCHEMA,
+    },
+  );
+}
+
 const TOOL_BUILDERS: Record<
   string,
   (sel: IntegrationSelection, ctx: ToolpackCtx) => StructuredToolInterface
@@ -1166,14 +1269,7 @@ const TOOL_BUILDERS: Record<
   leaf_connection_status: buildConnectionTool,
   leaf_open_invoices: buildInvoicesTool,
   leaf_second_copy: buildSecondCopyTool,
-  leaf_extend_connection: (sel, ctx) =>
-    buildWriteTool(sel, ctx, {
-      name: "leaf_extend_connection",
-      path: "/integrations/customers/extend",
-      description:
-        "Extend (unblock) a connection after the customer confirms. connectionId must be one leaf_lookup_customer returned for this contact. Set confirmed to true only after they agree; false refuses and sends nothing.",
-      done: "The connection was extended.",
-    }),
+  leaf_extend_connection: buildExtendTool,
   leaf_clear_mac: (sel, ctx) =>
     buildWriteTool(sel, ctx, {
       name: "leaf_clear_mac",

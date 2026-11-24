@@ -550,6 +550,117 @@ describe("leaf admin toolpack — reads", () => {
     );
   });
 
+  test("a PIX body is success when statusCode is not 1", async () => {
+    const { impl, calls } = mockFetch((url) => {
+      const u = new URL(url);
+      if (u.pathname.endsWith("/contracts")) {
+        return {
+          json: contractsPayload([{ id: 1, name: "Um", status: "active" }]),
+        };
+      }
+      if (u.pathname.endsWith("/billets")) {
+        return {
+          json: {
+            statusCode: 1,
+            results: [{ id: 12799, description: "Mensalidade", amount: 99.9 }],
+          },
+        };
+      }
+      if (u.searchParams.get("type") === "pix") {
+        return {
+          json: {
+            apiVersion: 2,
+            statusCode: 0,
+            detailCode: 0,
+            detailDescription: "Done",
+            type: "pix",
+            amount: 99.9,
+            copyPaste: "00020126",
+            qrCode: "iVBORw0KGgo",
+            expiresAt: "2026-10-26T23:59:59",
+          },
+        };
+      }
+      return { json: { statusCode: 0 } };
+    });
+    const out = (await tool("leaf_second_copy", {
+      fetchImpl: impl,
+      contactDbId: null,
+    }).invoke({
+      contractId: "1",
+      document: "01396884556",
+      invoiceId: "12799",
+      type: "pix",
+    })) as string;
+    expect(
+      calls.some((c) => c.url.includes("/billets/12799/payment?type=pix")),
+    ).toBe(true);
+    expect(out).toContain("00020126");
+    expect(out).toContain("iVBORw0KGgo");
+    expect(out).not.toContain("rejected");
+  });
+
+  test("a QR without a copy-paste line is still a PIX success", async () => {
+    const { impl } = mockFetch((url) => {
+      const u = new URL(url);
+      if (u.pathname.endsWith("/contracts")) {
+        return { json: contractsPayload([{ id: 1, status: "active" }]) };
+      }
+      if (u.pathname.endsWith("/billets")) {
+        return { json: { statusCode: 1, results: [{ id: 12799 }] } };
+      }
+      return {
+        json: { statusCode: 2, type: "pix", qrCode: "iVBORw0KGgo" },
+      };
+    });
+    const out = (await tool("leaf_second_copy", {
+      fetchImpl: impl,
+      contactDbId: null,
+    }).invoke({
+      contractId: "1",
+      document: "01396884556",
+      invoiceId: "12799",
+      type: "pix",
+    })) as string;
+    expect(out).toContain("iVBORw0KGgo");
+    expect(out).not.toContain("rejected");
+    expect(out).not.toContain("did not return");
+  });
+
+  test("HTTP 200 without a PIX payload stays a refusal", async () => {
+    const { impl, calls } = mockFetch((url) => {
+      const u = new URL(url);
+      if (u.pathname.endsWith("/contracts")) {
+        return { json: contractsPayload([{ id: 1, status: "active" }]) };
+      }
+      if (u.pathname.endsWith("/billets")) {
+        return { json: { statusCode: 1, results: [{ id: 12799 }] } };
+      }
+      return {
+        json: {
+          statusCode: 0,
+          detailCode: 20,
+          detailDescription: SECRET,
+        },
+      };
+    });
+    const out = (await tool("leaf_second_copy", {
+      fetchImpl: impl,
+      contactDbId: null,
+    }).invoke({
+      contractId: "1",
+      document: "01396884556",
+      invoiceId: "12799",
+      type: "pix",
+    })) as string;
+    expect(calls.some((c) => c.url.includes("/billets/12799/payment"))).toBe(
+      true,
+    );
+    expect(out).toContain("rejected");
+    expect(out).not.toContain(SECRET);
+    expect(out).not.toContain("00020126");
+  });
+
   test("an invoice id that is not digits never calls Leaf", async () => {
     const { impl, calls } = mockFetch(() => ({
       json: contractsPayload([CONTRACT]),
@@ -601,6 +712,73 @@ describe("leaf admin toolpack — writes and failures", () => {
     expect(
       calls.some((c) => c.url.endsWith("/integrations/customers/disconnect")),
     ).toBe(true);
+    expect(out).not.toContain(SECRET);
+  });
+
+  test("extend without a connection id posts the contract id", async () => {
+    const bodies: unknown[] = [];
+    const { impl, calls } = mockFetch((url, init) => {
+      if (url.includes("/contracts")) {
+        return {
+          json: contractsPayload([
+            {
+              id: 1,
+              name: "Sem conexao",
+              status: "blocked",
+              connectionId: null,
+            },
+          ]),
+        };
+      }
+      bodies.push(bodyOf(init));
+      return {
+        json: {
+          apiVersion: 2,
+          statusCode: 1,
+          detailCode: 0,
+          detailDescription: "Done",
+        },
+      };
+    });
+    const out = (await tool("leaf_extend_connection", {
+      fetchImpl: impl,
+      contactDbId: null,
+    }).invoke({
+      connectionId: "1",
+      confirmed: true,
+      document: "01396884556",
+    })) as string;
+    const posts = calls.filter((c) =>
+      c.url.includes("/integrations/customers/extend"),
+    );
+    expect(posts).toHaveLength(1);
+    expect(new URL(posts[0]?.url ?? "").pathname).toBe(
+      "/api/v2/integrations/customers/extend",
+    );
+    expect(bodies).toEqual([{ contractId: 1 }]);
+    expect(out).toContain("extended");
+    expect(out).not.toContain(SECRET);
+  });
+
+  test("an HTTP 200 business refusal still refuses the extend", async () => {
+    const { impl, calls } = mockFetch((url) => {
+      if (url.includes("/contracts"))
+        return { json: contractsPayload([CONTRACT]) };
+      return {
+        json: { statusCode: 0, detailCode: 20, detailDescription: SECRET },
+      };
+    });
+    const out = (await tool("leaf_extend_connection", {
+      fetchImpl: impl,
+    }).invoke({
+      connectionId: "99",
+      confirmed: true,
+    })) as string;
+    expect(
+      calls.some((c) => c.url.endsWith("/integrations/customers/extend")),
+    ).toBe(true);
+    expect(out).toContain("rejected");
+    expect(out).not.toContain("extended");
     expect(out).not.toContain(SECRET);
   });
 
