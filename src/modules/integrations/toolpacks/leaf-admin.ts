@@ -101,11 +101,22 @@ function finiteNumber(value: unknown): number | null {
   return null;
 }
 
+function normalizedLeafStatus(code: unknown): string | null {
+  if (typeof code === "number" && Number.isFinite(code)) return String(code);
+  if (typeof code !== "string") return null;
+  const normalized = code.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+// Leaf reports success as 1 or OK. Case does not matter: "OK" and "ok" match.
+// 0 is a business refusal and stays one.
 function successStatus(code: unknown): boolean {
-  if (code === 1) return true;
-  return (
-    typeof code === "string" && ["1", "ok"].includes(code.trim().toLowerCase())
-  );
+  const normalized = normalizedLeafStatus(code);
+  return normalized === "1" || normalized === "ok";
+}
+
+function refusedLeafStatus(code: unknown): boolean {
+  return normalizedLeafStatus(code) === "0";
 }
 
 function invalidDetail(detail: unknown): boolean {
@@ -288,6 +299,7 @@ async function leafRequest(
     status >= 200 &&
     status < 300 &&
     record &&
+    !refusedLeafStatus(record.statusCode) &&
     (successStatus(record.statusCode) || init.acceptPayload?.(record) === true)
   ) {
     return { ok: true, body: record };
@@ -985,8 +997,7 @@ function buildInvoicesTool(
   );
 }
 
-// A PIX payment is the copy-paste line, the QR, or both. statusCode on that
-// HTTP 200 is not the signal: 0 and 2 are the envelope's error and warning.
+// copyPaste or qrCode is a PIX payment. statusCode 0 is still a refusal.
 function pixPayload(record: Record<string, unknown>): boolean {
   return (
     rawText(record.copyPaste) != null ||

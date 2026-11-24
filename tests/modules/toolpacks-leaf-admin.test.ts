@@ -550,7 +550,7 @@ describe("leaf admin toolpack — reads", () => {
     );
   });
 
-  test("a PIX body is success when statusCode is not 1", async () => {
+  test("statusCode OK is a PIX success", async () => {
     const { impl, calls } = mockFetch((url) => {
       const u = new URL(url);
       if (u.pathname.endsWith("/contracts")) {
@@ -561,7 +561,7 @@ describe("leaf admin toolpack — reads", () => {
       if (u.pathname.endsWith("/billets")) {
         return {
           json: {
-            statusCode: 1,
+            statusCode: "OK",
             results: [{ id: 12799, description: "Mensalidade", amount: 99.9 }],
           },
         };
@@ -570,8 +570,8 @@ describe("leaf admin toolpack — reads", () => {
         return {
           json: {
             apiVersion: 2,
-            statusCode: 0,
-            detailCode: 0,
+            statusCode: "OK",
+            detailCode: "OK",
             detailDescription: "Done",
             type: "pix",
             amount: 99.9,
@@ -627,7 +627,7 @@ describe("leaf admin toolpack — reads", () => {
     expect(out).not.toContain("did not return");
   });
 
-  test("HTTP 200 without a PIX payload stays a refusal", async () => {
+  test("HTTP 200 with statusCode 0 stays a refusal even with a PIX payload", async () => {
     const { impl, calls } = mockFetch((url) => {
       const u = new URL(url);
       if (u.pathname.endsWith("/contracts")) {
@@ -641,6 +641,9 @@ describe("leaf admin toolpack — reads", () => {
           statusCode: 0,
           detailCode: 20,
           detailDescription: SECRET,
+          type: "pix",
+          copyPaste: "00020126",
+          qrCode: "iVBORw0KGgo",
         },
       };
     });
@@ -758,6 +761,32 @@ describe("leaf admin toolpack — writes and failures", () => {
     expect(bodies).toEqual([{ contractId: 1 }]);
     expect(out).toContain("extended");
     expect(out).not.toContain(SECRET);
+  });
+
+  test("statusCode OK extends the connection", async () => {
+    const { impl, calls } = mockFetch((url) => {
+      if (url.includes("/contracts"))
+        return { json: contractsPayload([CONTRACT]) };
+      return {
+        json: {
+          apiVersion: 2,
+          statusCode: "OK",
+          detailCode: "OK",
+          detailDescription: "Done",
+        },
+      };
+    });
+    const out = (await tool("leaf_extend_connection", {
+      fetchImpl: impl,
+    }).invoke({
+      connectionId: "99",
+      confirmed: true,
+    })) as string;
+    expect(
+      calls.some((c) => c.url.endsWith("/integrations/customers/extend")),
+    ).toBe(true);
+    expect(out).toContain("extended");
+    expect(out).not.toContain("rejected");
   });
 
   test("an HTTP 200 business refusal still refuses the extend", async () => {
