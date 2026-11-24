@@ -443,12 +443,7 @@ async function loadIdentity(
   { ok: true; phone: string | null; document: string | null } | LeafNo
 > {
   if (ctx.contactDbId == null) {
-    return {
-      ok: false,
-      failure: toolFailure(
-        "This conversation has no contact on file, so Leaf Admin cannot be queried.",
-      ),
-    };
+    return { ok: true, phone: null, document: null };
   }
   const contactId = ctx.contactDbId;
   try {
@@ -595,6 +590,15 @@ async function findContracts(
     if (listed.rows.length > 0) {
       return { ok: true, matchedBy: "document", contracts: listed.rows };
     }
+  }
+  if (ctx.contactDbId == null && !stated.digits) {
+    return {
+      ok: false,
+      failure: fail(
+        ready.token,
+        "Não há contato nesta conversa e não veio CPF/CNPJ. Passe document com 11 ou 14 dígitos.",
+      ),
+    };
   }
   if (!identity.phone && !identity.document && !stated.digits) {
     return {

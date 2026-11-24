@@ -262,6 +262,42 @@ describe("leaf admin toolpack — identity", () => {
     expect(out).toContain('"matchedBy":"document"');
   });
 
+  test("without a contact a valid document still queries", async () => {
+    const { impl, calls } = mockFetch((url) => {
+      const u = new URL(url);
+      if (u.searchParams.get("document") === "01396884556") {
+        return { json: contractsPayload([{ id: "8", name: "Sem contato" }]) };
+      }
+      return { json: contractsPayload([]) };
+    });
+    const out = (await tool("leaf_lookup_customer", {
+      fetchImpl: impl,
+      contactDbId: null,
+      base: contactBase({
+        phone: PHONE,
+        customAttributes: { cpf_cnpj: DOCUMENT },
+      }),
+    }).invoke({ document: "01396884556" })) as string;
+    expect(calls).toHaveLength(1);
+    const u = new URL(calls[0]?.url ?? "");
+    expect(u.pathname).toBe("/api/v2/integrations/contracts");
+    expect(u.searchParams.get("document")).toBe("01396884556");
+    expect(u.searchParams.get("phone")).toBeNull();
+    expect(out).toContain("Sem contato");
+    expect(out).not.toContain(SECRET);
+  });
+
+  test("without a contact and without a document the lookup refuses in Portuguese", async () => {
+    const { impl, calls } = mockFetch(() => ({ json: contractsPayload([]) }));
+    const out = (await tool("leaf_lookup_customer", {
+      fetchImpl: impl,
+      contactDbId: null,
+    }).invoke({})) as string;
+    expect(calls).toHaveLength(0);
+    expect(out).toContain("Não há contato nesta conversa e não veio CPF/CNPJ");
+    expect(out).not.toContain("no contact on file");
+  });
+
   test("a CPF the customer stated is sent when the contact has no cpf_cnpj", async () => {
     const { impl, calls } = mockFetch((url) => {
       const u = new URL(url);

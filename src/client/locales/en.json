@@ -3500,9 +3500,9 @@
       "WEBHOOK": "Inbound webhook"
     },
     "leafCredentialHint": "The ERP base URL and the token live on a Leaf Admin credential. Test connection is on that credential, and it stays off a generic one.",
-    "leafLookupDocument": "If the phone matches nothing, the CPF/CNPJ is sent only when the contact already has the cpf_cnpj attribute, as the document parameter. When the contact has no such attribute, the tool accepts the CPF/CNPJ the customer stated in the conversation (11 or 14 digits) and sends it as document.",
+    "leafLookupDocument": "If the phone matches nothing, the CPF/CNPJ is sent only when the contact already has the cpf_cnpj attribute, as the document parameter. When the contact has no such attribute, or the conversation has no contact, the tool accepts the CPF/CNPJ the customer stated (11 or 14 digits) and sends it as document.",
     "leafLookupIds": "The contract and the connectionId used afterwards are the ones that search returned.",
-    "leafLookupPhone": "The lookup starts with the Chatwoot contact's phone, the phone parameter on GET /integrations/contracts. The model does not supply the phone, the URL, the token or an id.",
+    "leafLookupPhone": "The lookup starts with the Chatwoot contact's phone, the phone parameter on GET /integrations/contracts, only when the contact exists. The model does not supply the phone, the URL, the token or an id.",
     "leafLookupTitle": "How the lookup finds the customer",
     "loadError": "Could not load this integration.",
     "name": "Name",

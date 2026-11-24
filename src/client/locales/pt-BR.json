@@ -3616,9 +3616,9 @@
       "WEBHOOK": "Webhook de entrada"
     },
     "leafCredentialHint": "A URL base do ERP e o token ficam na credencial do tipo Leaf Admin. Testar conexão aparece nessa credencial, e não na genérica.",
-    "leafLookupDocument": "Se o telefone não achar, o CPF/CNPJ entra só se o contato já tiver o atributo cpf_cnpj, parâmetro document. Se o contato não tiver o atributo, a ferramenta aceita o CPF/CNPJ que o cliente disse na conversa (11 ou 14 dígitos) e manda em document.",
+    "leafLookupDocument": "Se o telefone não achar, o CPF/CNPJ entra só se o contato já tiver o atributo cpf_cnpj, parâmetro document. Se o contato não tiver o atributo, ou se a conversa não tiver contato, a ferramenta aceita o CPF/CNPJ que o cliente disse (11 ou 14 dígitos) e manda em document.",
     "leafLookupIds": "Contrato e connectionId usados depois são os que essa busca devolveu.",
-    "leafLookupPhone": "A consulta começa pelo telefone do contato no Chatwoot, parâmetro phone em GET /integrations/contracts. O modelo não informa telefone, URL, token nem id.",
+    "leafLookupPhone": "A consulta começa pelo telefone do contato no Chatwoot, parâmetro phone em GET /integrations/contracts, só quando o contato existe. O modelo não informa telefone, URL, token nem id.",
     "leafLookupTitle": "Como a consulta acha o cliente",
     "loadError": "Não foi possível carregar esta integração.",
     "name": "Nome",

@@ -93,10 +93,10 @@ function catalogLabelOf(
   }
 }
 
-// How Leaf Admin finds the customer. `phone` goes first. `document` is the contact
-// attribute `cpf_cnpj`, or the CPF/CNPJ the customer stated when that attribute is
-// absent (11 or 14 digits). Later tools may use only a contract id or connectionId
-// from that list.
+// How Leaf Admin finds the customer. `phone` is first only when the contact exists.
+// `document` is the contact attribute `cpf_cnpj`, or the CPF/CNPJ the customer stated
+// (11 or 14 digits) when that attribute is absent or there is no contact. Later tools
+// may use only a contract id or connectionId from that list.
 export function LeafLookupHelp() {
   const { t } = useTranslation();
   return (
@@ -108,13 +108,13 @@ export function LeafLookupHelp() {
         <p>
           {t(
             "integrations.leafLookupPhone",
-            "The lookup starts with the Chatwoot contact's phone, the phone parameter on GET /integrations/contracts. The model does not supply the phone, the URL, the token or an id.",
+            "The lookup starts with the Chatwoot contact's phone, the phone parameter on GET /integrations/contracts, only when the contact exists. The model does not supply the phone, the URL, the token or an id.",
           )}
         </p>
         <p>
           {t(
             "integrations.leafLookupDocument",
-            "If the phone matches nothing, the CPF/CNPJ is sent only when the contact already has the cpf_cnpj attribute, as the document parameter. When the contact has no such attribute, the tool accepts the CPF/CNPJ the customer stated in the conversation (11 or 14 digits) and sends it as document.",
+            "If the phone matches nothing, the CPF/CNPJ is sent only when the contact already has the cpf_cnpj attribute, as the document parameter. When the contact has no such attribute, or the conversation has no contact, the tool accepts the CPF/CNPJ the customer stated (11 or 14 digits) and sends it as document.",
           )}
         </p>
         <p>

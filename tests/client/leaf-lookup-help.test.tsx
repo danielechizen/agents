@@ -16,7 +16,8 @@ test("the Leaf Admin integration screen states the lookup parameters", () => {
   );
   expect(text).toContain("cpf_cnpj");
   expect(text).toContain("document parameter");
-  expect(text).toContain("the customer stated in the conversation");
+  expect(text).toContain("only when the contact exists");
+  expect(text).toContain("the conversation has no contact");
   expect(text).toContain("connectionId");
   const pt = ptBR.integrations as {
     leafLookupPhone: string;
@@ -25,13 +26,14 @@ test("the Leaf Admin integration screen states the lookup parameters", () => {
   };
   expect(pt.leafLookupPhone).toContain("parâmetro phone");
   expect(pt.leafLookupPhone).toContain("GET /integrations/contracts");
+  expect(pt.leafLookupPhone).toContain("só quando o contato existe");
   expect(pt.leafLookupPhone).toContain(
     "não informa telefone, URL, token nem id",
   );
   expect(pt.leafLookupDocument).toContain("cpf_cnpj");
   expect(pt.leafLookupDocument).toContain("parâmetro document");
   expect(pt.leafLookupDocument).toContain(
-    "aceita o CPF/CNPJ que o cliente disse na conversa (11 ou 14 dígitos) e manda em document",
+    "ou se a conversa não tiver contato, a ferramenta aceita o CPF/CNPJ que o cliente disse (11 ou 14 dígitos) e manda em document",
   );
   expect(pt.leafLookupIds).toContain("connectionId");
 });
