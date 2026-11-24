@@ -250,7 +250,7 @@ describe("leaf admin toolpack — identity", () => {
         phone: PHONE,
         customAttributes: { cpf_cnpj: DOCUMENT },
       }),
-    }).invoke({})) as string;
+    }).invoke({ document: "98.765.432/0001-10" })) as string;
     expect(calls).toHaveLength(2);
     expect(new URL(calls[0]?.url ?? "").searchParams.get("phone")).toBe(
       PHONE_DIGITS,
@@ -260,6 +260,59 @@ describe("leaf admin toolpack — identity", () => {
     );
     expect(out).toContain("Por CPF");
     expect(out).toContain('"matchedBy":"document"');
+  });
+
+  test("a CPF the customer stated is sent when the contact has no cpf_cnpj", async () => {
+    const { impl, calls } = mockFetch((url) => {
+      const u = new URL(url);
+      if (u.searchParams.get("phone")) return { json: contractsPayload([]) };
+      if (u.searchParams.get("document") === DOCUMENT_DIGITS) {
+        return { json: contractsPayload([{ id: "8", name: "Pelo cliente" }]) };
+      }
+      return { json: contractsPayload([]) };
+    });
+    const out = (await tool("leaf_lookup_customer", {
+      fetchImpl: impl,
+      base: contactBase({ phone: PHONE, customAttributes: {} }),
+    }).invoke({ document: DOCUMENT })) as string;
+    expect(calls).toHaveLength(2);
+    expect(new URL(calls[0]?.url ?? "").searchParams.get("phone")).toBe(
+      PHONE_DIGITS,
+    );
+    expect(new URL(calls[1]?.url ?? "").searchParams.get("document")).toBe(
+      DOCUMENT_DIGITS,
+    );
+    expect(out).toContain("Pelo cliente");
+    expect(out).not.toContain(SECRET);
+  });
+
+  test("a CNPJ the customer stated is 14 digits, and a short one is refused", async () => {
+    const cnpj = "12.345.678/0001-95";
+    const { impl, calls } = mockFetch((url) => {
+      const u = new URL(url);
+      if (u.searchParams.get("phone")) return { json: contractsPayload([]) };
+      if (u.searchParams.get("document") === "12345678000195") {
+        return { json: contractsPayload([{ id: "9", name: "Pelo CNPJ" }]) };
+      }
+      return { json: contractsPayload([]) };
+    });
+    const out = (await tool("leaf_lookup_customer", {
+      fetchImpl: impl,
+      base: contactBase({ phone: PHONE, customAttributes: {} }),
+    }).invoke({ document: cnpj })) as string;
+    expect(new URL(calls.at(-1)?.url ?? "").searchParams.get("document")).toBe(
+      "12345678000195",
+    );
+    expect(out).toContain("Pelo CNPJ");
+
+    const refused = mockFetch(() => ({ json: contractsPayload([]) }));
+    const bad = (await tool("leaf_lookup_customer", {
+      fetchImpl: refused.impl,
+      base: contactBase({ phone: PHONE, customAttributes: {} }),
+    }).invoke({ document: "123.456" })) as string;
+    expect(refused.calls).toHaveLength(0);
+    expect(bad).toContain("11 or 14");
+    expect(bad).not.toContain(SECRET);
   });
 
   test("pages until the total is covered and stops on an empty page", async () => {
@@ -626,7 +679,7 @@ describe("leaf admin toolpack — writes and failures", () => {
       Object.keys(spec.schema.shape),
     );
     expect(names).not.toContain("phone");
-    expect(names).not.toContain("document");
+    expect(names).toContain("document");
     expect(names).not.toContain("system_url");
     expect(names).not.toContain("api_key");
     expect(names).not.toContain("url");

@@ -93,9 +93,10 @@ function catalogLabelOf(
   }
 }
 
-// How Leaf Admin finds the customer. The parameters are the ones `findContracts` sends:
-// `phone` first, then `document` from the contact attribute `cpf_cnpj` only when the phone
-// matches nothing. Later tools may use only a contract id or connectionId from that list.
+// How Leaf Admin finds the customer. `phone` goes first. `document` is the contact
+// attribute `cpf_cnpj`, or the CPF/CNPJ the customer stated when that attribute is
+// absent (11 or 14 digits). Later tools may use only a contract id or connectionId
+// from that list.
 export function LeafLookupHelp() {
   const { t } = useTranslation();
   return (
@@ -113,7 +114,7 @@ export function LeafLookupHelp() {
         <p>
           {t(
             "integrations.leafLookupDocument",
-            "If the phone matches nothing, the CPF/CNPJ is sent only when the contact already has the cpf_cnpj attribute, as the document parameter.",
+            "If the phone matches nothing, the CPF/CNPJ is sent only when the contact already has the cpf_cnpj attribute, as the document parameter. When the contact has no such attribute, the tool accepts the CPF/CNPJ the customer stated in the conversation (11 or 14 digits) and sends it as document.",
           )}
         </p>
         <p>

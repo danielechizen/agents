@@ -555,24 +555,32 @@ async function listContracts(
   return { ok: true, rows };
 }
 
+function statedDocument(
+  raw: string | undefined,
+): { ok: true; digits: string | null } | { ok: false } {
+  if (raw == null || raw.trim() === "") return { ok: true, digits: null };
+  const only = raw.replace(/\D/g, "");
+  if (only.length !== 11 && only.length !== 14) return { ok: false };
+  return { ok: true, digits: only };
+}
+
 async function findContracts(
   ready: Ready,
   ctx: ToolpackCtx,
+  statedRaw?: string,
 ): Promise<
   | { ok: true; matchedBy: "phone" | "document"; contracts: OwnedContract[] }
   | LeafNo
 > {
-  const identity = await loadIdentity(ctx);
-  if (!identity.ok) return identity;
-  if (!identity.phone && !identity.document) {
+  const stated = statedDocument(statedRaw);
+  if (!stated.ok) {
     return {
       ok: false,
-      failure: fail(
-        ready.token,
-        "This contact has no phone and no stored CPF/CNPJ, so Leaf Admin cannot be queried.",
-      ),
+      failure: fail(ready.token, "The CPF/CNPJ must be 11 or 14 digits."),
     };
   }
+  const identity = await loadIdentity(ctx);
+  if (!identity.ok) return identity;
   if (identity.phone) {
     const listed = await listContracts(ready, ctx, { phone: identity.phone });
     if (!listed.ok) return listed;
@@ -580,14 +588,22 @@ async function findContracts(
       return { ok: true, matchedBy: "phone", contracts: listed.rows };
     }
   }
-  if (identity.document) {
-    const listed = await listContracts(ready, ctx, {
-      document: identity.document,
-    });
+  const document = identity.document ?? stated.digits;
+  if (document) {
+    const listed = await listContracts(ready, ctx, { document });
     if (!listed.ok) return listed;
     if (listed.rows.length > 0) {
       return { ok: true, matchedBy: "document", contracts: listed.rows };
     }
+  }
+  if (!identity.phone && !identity.document && !stated.digits) {
+    return {
+      ok: false,
+      failure: fail(
+        ready.token,
+        "This contact has no phone and no stored CPF/CNPJ. Pass document as the CPF/CNPJ the customer stated, 11 or 14 digits.",
+      ),
+    };
   }
   return {
     ok: false,
@@ -757,7 +773,14 @@ function decodePdf(b64: string): ArrayBuffer | null {
   return out;
 }
 
-const LOOKUP_SCHEMA = z.object({});
+const STATED_DOCUMENT = z
+  .string()
+  .max(40)
+  .optional()
+  .describe(
+    "CPF or CNPJ the customer stated in this conversation. Sent as document only when this contact has no cpf_cnpj attribute and the phone matches no contract. 11 or 14 digits; punctuation is ignored. Not a URL, a token, or an id. Pass the same value on the next Leaf tool so that tool can check the id.",
+  );
+const LOOKUP_SCHEMA = z.object({ document: STATED_DOCUMENT });
 const CONNECTION_SCHEMA = z.object({
   connectionId: z
     .string()
@@ -766,6 +789,7 @@ const CONNECTION_SCHEMA = z.object({
     .describe(
       "connectionId of a contract leaf_lookup_customer returned for this contact. Any other id is refused.",
     ),
+  document: STATED_DOCUMENT,
 });
 const CONTRACT_SCHEMA = z.object({
   contractId: z
@@ -775,6 +799,7 @@ const CONTRACT_SCHEMA = z.object({
     .describe(
       "Contract id leaf_lookup_customer returned for this contact. Any other id is refused.",
     ),
+  document: STATED_DOCUMENT,
 });
 const SECOND_COPY_SCHEMA = z.object({
   contractId: z
@@ -784,6 +809,7 @@ const SECOND_COPY_SCHEMA = z.object({
     .describe(
       "Contract id leaf_lookup_customer returned for this contact. Any other id is refused.",
     ),
+  document: STATED_DOCUMENT,
   invoiceId: z
     .string()
     .min(1)
@@ -808,6 +834,7 @@ const WRITE_SCHEMA = z.object({
     .describe(
       "True only after the customer explicitly agreed to this change in the conversation. false refuses the call and nothing is sent.",
     ),
+  document: STATED_DOCUMENT,
 });
 
 const LEAF_TOOL_SPECS: ToolSpec[] = [
@@ -825,10 +852,10 @@ function buildLookupTool(
   ctx: ToolpackCtx,
 ): StructuredToolInterface {
   return failableTool(
-    async () => {
+    async (input: { document?: string }) => {
       const ready = await prepare(sel, ctx);
       if (!ready.ok) return ready.failure;
-      const found = await findContracts(ready, ctx);
+      const found = await findContracts(ready, ctx, input.document);
       if (!found.ok) return found.failure;
       return say(
         ready.token,
@@ -841,7 +868,7 @@ function buildLookupTool(
     {
       name: "leaf_lookup_customer",
       description:
-        "Look up this contact's Leaf Admin contracts. The phone is the Chatwoot contact's phone; a stored CPF/CNPJ (contact attribute cpf_cnpj) is used only when the phone matches nothing. Returns contract ids and connection ids for the other Leaf tools. Do not pass a phone, document, URL, token, or an id you were not given.",
+        "Look up this contact's Leaf Admin contracts. The phone is the Chatwoot contact's phone. A stored CPF/CNPJ (contact attribute cpf_cnpj) is used only when the phone matches nothing. When the contact has no cpf_cnpj, pass document as the CPF/CNPJ the customer stated (11 or 14 digits). Returns contract ids and connection ids for the other Leaf tools. Do not pass a phone, URL, token, or an id.",
       schema: LOOKUP_SCHEMA,
     },
   );
@@ -852,10 +879,10 @@ function buildConnectionTool(
   ctx: ToolpackCtx,
 ): StructuredToolInterface {
   return failableTool(
-    async (input: { connectionId: string }) => {
+    async (input: { connectionId: string; document?: string }) => {
       const ready = await prepare(sel, ctx);
       if (!ready.ok) return ready.failure;
-      const found = await findContracts(ready, ctx);
+      const found = await findContracts(ready, ctx, input.document);
       if (!found.ok) return found.failure;
       const contract = byConnectionId(found.contracts, input.connectionId);
       if (!contract?.connectionId) {
@@ -888,10 +915,10 @@ function buildInvoicesTool(
   ctx: ToolpackCtx,
 ): StructuredToolInterface {
   return failableTool(
-    async (input: { contractId: string }) => {
+    async (input: { contractId: string; document?: string }) => {
       const ready = await prepare(sel, ctx);
       if (!ready.ok) return ready.failure;
-      const found = await findContracts(ready, ctx);
+      const found = await findContracts(ready, ctx, input.document);
       if (!found.ok) return found.failure;
       const contract = byContractId(found.contracts, input.contractId);
       if (!contract) {
@@ -1013,6 +1040,7 @@ function buildSecondCopyTool(
       contractId: string;
       invoiceId: string;
       type: PaymentType;
+      document?: string;
     }) => {
       if (!INVOICE_ID.test(input.invoiceId)) {
         return toolFailure(
@@ -1021,7 +1049,7 @@ function buildSecondCopyTool(
       }
       const ready = await prepare(sel, ctx);
       if (!ready.ok) return ready.failure;
-      const found = await findContracts(ready, ctx);
+      const found = await findContracts(ready, ctx, input.document);
       if (!found.ok) return found.failure;
       const contract = byContractId(found.contracts, input.contractId);
       if (!contract) {
@@ -1095,11 +1123,15 @@ function buildWriteTool(
   },
 ): StructuredToolInterface {
   return failableTool(
-    async (input: { connectionId: string; confirmed: boolean }) => {
+    async (input: {
+      connectionId: string;
+      confirmed: boolean;
+      document?: string;
+    }) => {
       if (input.confirmed !== true) return toolFailure(CONFIRM_REFUSAL);
       const ready = await prepare(sel, ctx);
       if (!ready.ok) return ready.failure;
-      const found = await findContracts(ready, ctx);
+      const found = await findContracts(ready, ctx, input.document);
       if (!found.ok) return found.failure;
       const contract = byConnectionId(found.contracts, input.connectionId);
       if (!contract?.connectionId) {

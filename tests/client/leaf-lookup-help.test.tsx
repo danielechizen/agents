@@ -16,6 +16,7 @@ test("the Leaf Admin integration screen states the lookup parameters", () => {
   );
   expect(text).toContain("cpf_cnpj");
   expect(text).toContain("document parameter");
+  expect(text).toContain("the customer stated in the conversation");
   expect(text).toContain("connectionId");
   const pt = ptBR.integrations as {
     leafLookupPhone: string;
@@ -29,5 +30,8 @@ test("the Leaf Admin integration screen states the lookup parameters", () => {
   );
   expect(pt.leafLookupDocument).toContain("cpf_cnpj");
   expect(pt.leafLookupDocument).toContain("parâmetro document");
+  expect(pt.leafLookupDocument).toContain(
+    "aceita o CPF/CNPJ que o cliente disse na conversa (11 ou 14 dígitos) e manda em document",
+  );
   expect(pt.leafLookupIds).toContain("connectionId");
 });

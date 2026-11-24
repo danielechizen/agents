@@ -26,7 +26,7 @@ O request não segue redirect, estoura em 15 s e lê no máximo um prefixo do co
 
 ## Identidade
 
-O telefone é `Contact.phone`, o espelho do telefone do contato no Chatwoot, só os dígitos. Não é argumento da ferramenta. O CPF/CNPJ é o atributo de contato `cpf_cnpj`, e só entra na busca quando o telefone não acha contrato (ou quando o contato não tem telefone). Sem os dois, a ferramenta não chama o Leaf.
+O telefone é `Contact.phone`, o espelho do telefone do contato no Chatwoot, só os dígitos. Não é argumento da ferramenta. O CPF/CNPJ gravado é o atributo de contato `cpf_cnpj`, e só entra na busca quando o telefone não acha contrato (ou quando o contato não tem telefone). Se o contato não tiver o atributo, a ferramenta aceita o CPF/CNPJ que o cliente disse na conversa (11 ou 14 dígitos) e manda em `document`. Sem telefone, sem atributo e sem esse documento, a ferramenta não chama o Leaf.
 
 Contrato, conexão e fatura que o modelo passa têm de estar na busca **desta** chamada. Um id que a lista não devolveu não segue para o GET ou o POST.
 
